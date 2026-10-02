@@ -1,0 +1,184 @@
+diff --git a/act_backend/address_constraints.py b/act_backend/address_constraints.py
+new file mode 100644
+index 0000000..cb96946
+--- /dev/null
++++ b/act_backend/address_constraints.py
+@@ -0,0 +1,99 @@
++"""Lower declared integer address predicates to the existing OR-Tools solver.
++
++Supported: declared address/computation names, integers, +, -, *, positive
++constant/computation-attribute modulus, comparisons, and/or/not. Unsupported
++syntax fails generation; no predicate is silently dropped or evaluated as code.
++"""
++import ast
++import re
++
++
++class ConstraintLowerer:
++    def __init__(self, instruction):
++        self.addresses = set(instruction.parameters)
++        self.attributes = set(instruction.comp_attr)
++        if self.addresses & self.attributes:
++            raise ValueError("Address and computation attribute names overlap")
++        self.guards = set()
++
++    def parse(self, source):
++        def qualify(match):
++            kind, name = match.groups()
++            allowed = self.addresses if kind == "a" else self.attributes
++            if name not in allowed:
++                raise ValueError(f"Unknown constraint attribute: {match.group()}")
++            return name
++        source = re.sub(r"@([ac])\.(\w+)", qualify, source).strip()
++        return ast.parse(source, mode="eval").body
++
++    def integer(self, node):
++        if isinstance(node, ast.Constant) and type(node.value) is int:
++            if not -(2**63) < node.value < 2**63:
++                raise ValueError("Constraint integer exceeds signed 64-bit range")
++            return f"solver.MakeIntConst(int64_t({node.value}))"
++        if isinstance(node, ast.Name):
++            if node.id in self.addresses:
++                return node.id
++            if node.id in self.attributes:
++                return f"solver.MakeIntConst({node.id})"
++            raise ValueError(f"Unknown constraint variable: {node.id}")
++        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
++            value = self.integer(node.operand)
++            return value if isinstance(node.op, ast.UAdd) else f"solver.MakeOpposite({value})"
++        if isinstance(node, ast.BinOp):
++            left = self.integer(node.left)
++            right = self.integer(node.right)
++            methods = {ast.Add: "MakeSum", ast.Sub: "MakeDifference", ast.Mult: "MakeProd"}
++            if type(node.op) in methods:
++                return f"solver.{methods[type(node.op)]}({left}, {right})"
++            if isinstance(node.op, ast.Mod):
++                divisor = node.right
++                if isinstance(divisor, ast.Constant) and type(divisor.value) is int and divisor.value > 0:
++                    modulus = str(divisor.value)
++                elif isinstance(divisor, ast.Name) and divisor.id in self.attributes:
++                    modulus = divisor.id
++                    self.guards.add(modulus)
++                else:
++                    raise ValueError("Constraint modulus must be a positive integer or computation attribute")
++                return f"address_modulo({left}, {modulus})"
++        raise ValueError(f"Unsupported constraint arithmetic: {ast.dump(node)}")
++
++    def predicate(self, node):
++        if isinstance(node, ast.Constant) and type(node.value) is bool:
++            return f"solver.MakeIntConst({int(node.value)})"
++        if isinstance(node, ast.Compare):
++            methods = {ast.Eq: "MakeIsEqualVar", ast.NotEq: "MakeIsDifferentVar",
++                       ast.Lt: "MakeIsLessVar", ast.LtE: "MakeIsLessOrEqualVar",
++                       ast.Gt: "MakeIsGreaterVar", ast.GtE: "MakeIsGreaterOrEqualVar"}
++            left = node.left
++            terms = []
++            for op, right in zip(node.ops, node.comparators):
++                if type(op) not in methods:
++                    raise ValueError("Unsupported constraint comparison")
++                terms.append(f"solver.{methods[type(op)]}({self.integer(left)}, {self.integer(right)})")
++                left = right
++            return self.combine("MakeMin", terms)
++        if isinstance(node, ast.BoolOp):
++            method = "MakeMin" if isinstance(node.op, ast.And) else "MakeMax"
++            return self.combine(method, [self.predicate(value) for value in node.values])
++        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
++            return f"solver.MakeDifference(int64_t(1), {self.predicate(node.operand)})"
++        raise ValueError(f"Unsupported constraint predicate: {ast.dump(node)}")
++
++    @staticmethod
++    def combine(method, values):
++        result = values[0]
++        for value in values[1:]:
++            result = f"solver.{method}({result}, {value})"
++        return result
++
++
++def generate_constraints(instruction):
++    lowerer = ConstraintLowerer(instruction)
++    predicates = [lowerer.predicate(lowerer.parse(line)) for line in instruction.constraints]
++    guards = "".join(
++        f'    if ({name} <= 0) throw std::invalid_argument("Constraint modulus must be positive");\n'
++        for name in sorted(lowerer.guards))
++    return guards + "".join(
++        f"    constraints.push_back(solver.MakeEquality({predicate}, int64_t(1)));\n"
++        for predicate in predicates)
+diff --git a/act_backend/generic/cpp/malloc/include/address_constraints.h b/act_backend/generic/cpp/malloc/include/address_constraints.h
+new file mode 100644
+index 0000000..8485944
+--- /dev/null
++++ b/act_backend/generic/cpp/malloc/include/address_constraints.h
+@@ -0,0 +1,18 @@
++#pragma once
++#include <limits>
++#include <stdexcept>
++#include "solver.h"
++
++// OR-Tools MakeModulo constrains the remainder's sign. Shift the numerator
++// by a multiple of the positive modulus to implement Python-style % even for
++// negative affine address differences, without overflowing the int64 domain.
++inline operations_research::IntExpr *address_modulo(
++    operations_research::IntExpr *value, int64 modulus) {
++  if (modulus <= 0) throw std::invalid_argument("Constraint modulus must be positive");
++  __int128 lower = value->Min();
++  __int128 shift = lower < 0 ? ((-lower + modulus - 1) / modulus) * modulus : 0;
++  if (shift > std::numeric_limits<int64>::max()
++      || __int128(value->Max()) + shift > std::numeric_limits<int64>::max())
++    throw std::invalid_argument("Constraint modulo domain exceeds int64");
++  return solver.MakeModulo(solver.MakeSum(value, int64(shift)), modulus);
++}
+diff --git a/act_backend/malloc_instructions_h_generator.py b/act_backend/malloc_instructions_h_generator.py
+index 1bf06d1..6ae27ae 100644
+--- a/act_backend/malloc_instructions_h_generator.py
++++ b/act_backend/malloc_instructions_h_generator.py
+@@ -3,6 +3,7 @@
+ import os
+ import re
+ from .template_loader import get_backend_template_loader
++from .address_constraints import generate_constraints
+
+
+ def to_camel_case(snake_str):
+@@ -42,7 +43,17 @@ def generate_instruction_class(instruction, templates):
+
+     addr_var_members = "\n"
+     for param in params:
+-        addr_var_members += f"  IntVar *{param} = MAKE_INT_VAR(INT64_MIN, INT64_MAX);\n"
++        capacities = [
++            ((1 << 30) if buffer == "d0" else instruction.find_data_model(buffer).access_dim[axis])
++            for buffer, addresses, _ in instruction.instr_outputs + instruction.instr_inputs
++            for axis, address in enumerate(addresses)
++            if extract_addr_var(str(address)) == param
++        ]
++        if not capacities:
++            raise ValueError(f"Address parameter has no declared storage domain: {param}")
++        # Bound BEFORE constructing arithmetic predicates: full int64 domains
++        # overflow internal division/product bounds in OR-Tools modulo.
++        addr_var_members += f"  IntVar *{param} = MAKE_INT_VAR(0, {min(capacities)});\n"
+
+     # Generate get_h methods: output first (get_h0), then inputs (get_h1, get_h2, ...)
+     get_h_methods = ""
+@@ -113,6 +124,7 @@ def generate_instruction_class(instruction, templates):
+                             STR_BOUND_CHECKS=str_bound_checks,
+                             STR_FORMAT=str_format,
+                             GET_H_CASES=get_h_cases,
++                            ADDRESS_CONSTRAINTS=generate_constraints(instruction),
+                             GET_INT_VAR_LIST=get_int_var_list)
+
+
+diff --git a/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt b/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt
+index 5917c8c..cee9642 100644
+--- a/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt
++++ b/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt
+@@ -1,3 +1,4 @@
++#include "address_constraints.h"
+ class {{CLASS_NAME}} : public Instruction {
+ private:
+ {{COMP_ATTR_MEMBERS}}{{ADDR_VAR_MEMBERS}}
+@@ -20,5 +21,6 @@ public:
+
+   Constraints get_e() override {
+     Constraints constraints;
++{{ADDRESS_CONSTRAINTS}}
+     return constraints;
+   }

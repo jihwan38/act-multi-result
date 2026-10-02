@@ -1,0 +1,70 @@
+diff --git a/act_backend/generic/build.rs b/act_backend/generic/build.rs
+--- a/act_backend/generic/build.rs
++++ b/act_backend/generic/build.rs
+@@ -2,8 +2,30 @@ use std::{env, fs, path::PathBuf, process::Command};
+ 
+ fn main() {
++    println!("cargo:rerun-if-env-changed=ORTOOLS_ROOT");
++    println!("cargo:rerun-if-env-changed=NLOHMANN_JSON_ROOT");
++
+     println!("cargo:rustc-link-lib=dylib=stdc++");
+ 
+-    println!("cargo:rustc-link-search=native=/opt/ortools/lib");
++    let ortools_root = env::var("ORTOOLS_ROOT")
++        .ok()
++        .filter(|value| !value.is_empty())
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/opt/ortools"));
++    let ortools_lib_dir = ortools_root.join("lib");
++    if !ortools_lib_dir.is_dir() {
++        panic!(
++            "OR-Tools library directory does not exist: {}",
++            ortools_lib_dir.display()
++        );
++    }
++    println!(
++        "cargo:rustc-link-search=native={}",
++        ortools_lib_dir.display()
++    );
++    println!(
++        "cargo:rustc-link-arg=-Wl,-rpath,{}",
++        ortools_lib_dir.display()
++    );
+     println!("cargo:rustc-link-lib=dylib=ortools");
+     println!("cargo:rustc-link-lib=dylib=absl_base");
+     println!("cargo:rustc-link-lib=dylib=absl_log_internal_check_op");
+diff --git a/act_backend/generic/cpp/malloc/CMakeLists.txt b/act_backend/generic/cpp/malloc/CMakeLists.txt
+--- a/act_backend/generic/cpp/malloc/CMakeLists.txt
++++ b/act_backend/generic/cpp/malloc/CMakeLists.txt
+@@ -18,11 +18,25 @@ set(LIB_SOURCE_FILES
+     src/parser.cc
+     src/scheduler.cc
+ )
+ 
+-set(ORTOOLS_ROOT "/opt/ortools/")
+-set(CMAKE_PREFIX_PATH "${ORTOOLS_ROOT}" ${CMAKE_PREFIX_PATH})
+-find_package(ortools REQUIRED)
++if(DEFINED ENV{ORTOOLS_ROOT} AND NOT "$ENV{ORTOOLS_ROOT}" STREQUAL "")
++    set(ORTOOLS_ROOT "$ENV{ORTOOLS_ROOT}")
++elseif(NOT DEFINED ORTOOLS_ROOT OR "${ORTOOLS_ROOT}" STREQUAL "")
++    set(ORTOOLS_ROOT "/opt/ortools")
++endif()
++list(PREPEND CMAKE_PREFIX_PATH "${ORTOOLS_ROOT}")
++find_package(ortools CONFIG REQUIRED)
+ 
+-set(JSON_INCLUDE_PATH "/opt/nlohmann_json/include")
++if(DEFINED ENV{NLOHMANN_JSON_ROOT} AND NOT "$ENV{NLOHMANN_JSON_ROOT}" STREQUAL "")
++    set(NLOHMANN_JSON_ROOT "$ENV{NLOHMANN_JSON_ROOT}")
++elseif(NOT DEFINED NLOHMANN_JSON_ROOT OR "${NLOHMANN_JSON_ROOT}" STREQUAL "")
++    set(NLOHMANN_JSON_ROOT "/opt/nlohmann_json")
++endif()
++set(JSON_INCLUDE_PATH "${NLOHMANN_JSON_ROOT}/include")
++if(NOT EXISTS "${JSON_INCLUDE_PATH}/nlohmann/json.hpp")
++    message(FATAL_ERROR
++        "nlohmann/json header not found at ${JSON_INCLUDE_PATH}/nlohmann/json.hpp; "
++        "set NLOHMANN_JSON_ROOT to its installation prefix")
++endif()
+ add_library(nlohmann_json INTERFACE)
+ target_include_directories(nlohmann_json INTERFACE ${JSON_INCLUDE_PATH})
+ 
+ # Create a static library to be linked with Rust

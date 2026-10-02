@@ -1,0 +1,41 @@
+diff --git a/taidl_to/oracle_visitor.py b/taidl_to/oracle_visitor.py
+--- a/taidl_to/oracle_visitor.py
++++ b/taidl_to/oracle_visitor.py
+@@ -88,12 +88,20 @@ class OracleVisitor(IDLV2Visitor):
+         elif template_name in ['ADD', 'SUBTRACT', 'MULTIPLY', 'DIVIDE', 'MAXIMUM', 'MINIMUM', 'XOR']:
+             if len(operand_names) >= 2:
+                 mapping["A"] = f'"{operand_names[0]}"'
+                 mapping["B"] = f'"{operand_names[1]}"'
+-
++
+         elif template_name == 'BROADCAST':
+-            if len(operand_names) > 0:
+-                mapping["A"] = f'"{operand_names[0]}"'
++            if len(operand_names) != 1:
++                raise ValueError("broadcast requires exactly one operand")
++            mapping["A"] = f'"{operand_names[0]}"'
++
++            if 'dimensions' not in attributes:
++                raise ValueError("broadcast requires a dimensions attribute")
++            dims = attributes['dimensions']
++            if not isinstance(dims, list):
++                dims = [dims]
++            mapping["dims"] = ", ".join(str(dim) for dim in dims)
+-
++
+         elif template_name == 'TRANSPOSE':
+             if len(operand_names) > 0:
+                 mapping["in"] = f'"{operand_names[0]}"'
+diff --git a/taidl_to/templates/templates.txt b/taidl_to/templates/templates.txt
+--- a/taidl_to/templates/templates.txt
++++ b/taidl_to/templates/templates.txt
+@@ -406,6 +406,7 @@ output.append(line)
+ ### TEMPLATE: BROADCAST ###
+ b_loc = parameter_util(global_counters,  attrs, state, lvars, comp_attrs, {{A}})
+ lhs_loc, lhs_type = lhs_util(attrs, state, global_counters, lvars, comp_attrs, {{lhs}}, {{type}}, {{size}})
+-dims = create_num_str({{size}})
+-line = f"{lhs_loc} = {lhs_type} broadcast({b_loc}), dimensions={dim}"
++broadcast_dims = "{{{dims}}}"
++broadcast_dims = broadcast_dims.replace("'", "")
++line = f"{lhs_loc} = {lhs_type} broadcast({b_loc}), dimensions={broadcast_dims}"
+ output.append(line)

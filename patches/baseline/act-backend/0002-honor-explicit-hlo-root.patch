@@ -1,0 +1,124 @@
+diff --git a/act_backend/generic/src/isel/initializer/lib.rs b/act_backend/generic/src/isel/initializer/lib.rs
+index aa435e5..b830e98 100644
+--- a/act_backend/generic/src/isel/initializer/lib.rs
++++ b/act_backend/generic/src/isel/initializer/lib.rs
+@@ -72,20 +72,15 @@ pub fn parse_hlo_module_to_egraph<P: AsRef<Path>>(
+
+         // Process entry instructions
+         let mut root: Option<Id> = None;
+-        let total_instructions = entry_instructions.len();
+-
+-        for (i, expr) in entry_instructions.into_iter().enumerate() {
+-            // The last instruction is typically the ROOT operation
+-            let is_root = i == total_instructions - 1;
+-
++        for instruction in entry_instructions {
+             add_expr_to_egraph(
+-                &expr,
++                &instruction.expr,
+                 &mut egraph,
+                 &mut inputs,
+                 &mut table,
+                 &mut offsets,
+                 &mut root,
+-                is_root,
++                instruction.is_root,
+             );
+         }
+
+@@ -167,7 +162,6 @@ fn add_expr_to_egraph(
+             ttype,
+             tidx,
+         } => {
+-            assert!(parsing_root == false); // parameters should not be in root
+             if offsets[tidx.clone() as usize].0.is_none() {
+                 offsets[tidx.clone() as usize].0 = Some(add_parameter(
+                     tsymbol, tshape, ttile, ttype, egraph, inputs, table,
+@@ -175,6 +169,9 @@ fn add_expr_to_egraph(
+             } else {
+                 panic!("Duplicate parameter index: {}", tidx);
+             }
++            if parsing_root {
++                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
++            }
+         }
+
+         HLOExpr::Constant {
+@@ -183,8 +180,10 @@ fn add_expr_to_egraph(
+             tshape,
+             value,
+         } => {
+-            assert!(parsing_root == false); // parameters should not be in root
+             add_constant(tsymbol, ttype, tshape, value, egraph, table);
++            if parsing_root {
++                add_root_operations(tsymbol, ttype, tshape, "", egraph, table, root);
++            }
+         }
+
+         HLOExpr::Broadcast {
+@@ -797,7 +796,7 @@ fn add_root_operations(
+             },
+         );
+
+-        table.insert(tsymbol.to_string(), node);
++        // Output storage must not replace the logical value seen by later users.
+         *root = Some(node);
+     } else {
+         let node = table.get(tsymbol);
+@@ -853,7 +852,7 @@ fn add_root_operations(
+             },
+         );
+
+-        table.insert(tsymbol.to_string(), node);
++        // Output storage must not replace the logical value seen by later users.
+         *root = Some(node);
+     }
+ }
+diff --git a/act_backend/generic/src/isel/initializer/parser.rs b/act_backend/generic/src/isel/initializer/parser.rs
+index aad1a4e..cb3c62f 100644
+--- a/act_backend/generic/src/isel/initializer/parser.rs
++++ b/act_backend/generic/src/isel/initializer/parser.rs
+@@ -723,12 +723,19 @@ pub fn parse_region(
+     ))
+ }
+
++/// An ENTRY instruction and its explicit HLO ROOT marker.
++#[derive(Debug, Clone)]
++pub struct HloInstruction {
++    pub expr: HLOExpr,
++    pub is_root: bool,
++}
++
+ pub fn parse_hlo_module_with_regions(
+     lines: &[&str],
+ ) -> Option<(
+     HloModuleHeader,
+     std::collections::HashMap<String, HLORegion>,
+-    Vec<HLOExpr>,
++    Vec<HloInstruction>,
+ )> {
+     if lines.is_empty() {
+         return None;
+@@ -772,7 +779,10 @@ pub fn parse_hlo_module_with_regions(
+                     if let Some(expr) = parse_hlo_expr(
+                         &tsymbol, &ttype, &tshape, &ttile, &toperator, &toperands, &trest, &regions,
+                     ) {
+-                        entry_instructions.push(expr);
++                        entry_instructions.push(HloInstruction {
++                            expr,
++                            is_root: instruction_line.split_whitespace().next() == Some("ROOT"),
++                        });
+                     }
+                 }
+                 idx += 1;
+@@ -790,5 +800,10 @@ pub fn parse_hlo_module_with_regions(
+         }
+     }
+
++    assert_eq!(
++        entry_instructions.iter().filter(|instruction| instruction.is_root).count(),
++        1,
++        "ENTRY computation must have exactly one explicit ROOT instruction"
++    );
+     Some((header, regions, entry_instructions))
+ }

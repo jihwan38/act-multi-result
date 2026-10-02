@@ -1,0 +1,4 @@
+act-backend/0001-use-configurable-native-dependency-roots.patch
+act-backend/0002-honor-explicit-hlo-root.patch
+act-backend/0003-enforce-declared-address-constraints.patch
+act-oracle/0001-preserve-broadcast-dimensions.patch
