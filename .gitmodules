@@ -1,0 +1,12 @@
+[submodule "third_party/act"]
+	path = third_party/act
+	url = https://github.com/act-compiler/act.git
+[submodule "third_party/taidl"]
+	path = third_party/taidl
+	url = https://github.com/act-compiler/taidl.git
+[submodule "third_party/act-backend"]
+	path = third_party/act-backend
+	url = https://github.com/act-compiler/act-backend.git
+[submodule "third_party/act-oracle"]
+	path = third_party/act-oracle
+	url = https://github.com/act-compiler/act-oracle.git
