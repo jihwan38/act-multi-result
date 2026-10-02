@@ -1,0 +1,11 @@
+HloModule dependent_tuple_transitive, entry_computation_layout={(bf16[64,64]{1,0}, bf16[64,64]{1,0}, bf16[64,64]{1,0}, bf16[64,64]{1,0})->(bf16[64,64]{1,0}, bf16[64,64]{1,0})}
+ENTRY main {
+  %a = bf16[64,64] parameter(0)
+  %b = bf16[64,64] parameter(1)
+  %c = bf16[64,64] parameter(2)
+  %d = bf16[64,64] parameter(3)
+  %x = bf16[64,64] dot(%a, %b), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  %middle = bf16[64,64] dot(%x, %c), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  %y = bf16[64,64] dot(%middle, %d), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  ROOT %pair = (bf16[64,64], bf16[64,64]) tuple(%x, %y)
+}

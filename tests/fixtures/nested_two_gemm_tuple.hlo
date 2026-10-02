@@ -1,0 +1,13 @@
+HloModule nested_two_gemm, entry_computation_layout={(bf16[64,64]{1,0}, bf16[64,64]{1,0}, bf16[64,64]{1,0}, bf16[64,64]{1,0})->(bf16[64,64]{1,0}, ((), bf16[64,64]{1,0}))}
+
+ENTRY main {
+  %a0 = bf16[64,64] parameter(0)
+  %b0 = bf16[64,64] parameter(1)
+  %a1 = bf16[64,64] parameter(2)
+  %b1 = bf16[64,64] parameter(3)
+  %y0 = bf16[64,64] dot(%a0, %b0), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  %y1 = bf16[64,64] dot(%a1, %b1), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  %empty = () tuple()
+  %tail = ((), bf16[64,64]) tuple(%empty, %y1)
+  ROOT %output = (bf16[64,64], ((), bf16[64,64])) tuple(%y0, %tail)
+}
