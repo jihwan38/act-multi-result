@@ -1,0 +1,281 @@
+diff --git a/act_backend/generic/src/isel/discovery.rs b/act_backend/generic/src/isel/discovery.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd18bbabd62b5a7d59fee5b631b5f4b210f31f1a
+--- /dev/null
++++ b/act_backend/generic/src/isel/discovery.rs
+@@ -0,0 +1,220 @@
++//! Refresh generated multi-result matches at e-graph iteration boundaries.
++//! Adds only value tuples/projections; ISA nodes come from generated rewrites.
++use std::collections::{HashMap, HashSet};
++use std::time::Instant;
++
++use crate::ir::egraph::{TensorInfo, TensorOp};
++use crate::isel::rewrites;
++use crate::isel::rewrites::joint::{Derivations, ResultMatch};
++use egg::{EGraph, Id, Pattern, Searcher, Var};
++
++#[derive(Clone)]
++struct Match {
++    id: Id,
++    bindings: HashMap<Var, Id>,
++}
++
++struct Space {
++    choices: Vec<Vec<Match>>,
++    cursor: usize,
++    total: usize,
++}
++
++impl Space {
++    fn next(&mut self) -> Option<Vec<Match>> {
++        if self.cursor >= self.total {
++            return None;
++        }
++        // Ordinary Cartesian enumeration; no pairing or semantic-family score.
++        let mut offset = self.cursor;
++        self.cursor += 1;
++        Some(
++            self.choices
++                .iter()
++                .map(|choices| {
++                    let position = offset % choices.len();
++                    offset /= choices.len();
++                    choices[position].clone()
++                })
++                .collect(),
++        )
++    }
++}
++
++fn compatible(selected: &[Match], derivations: &mut Derivations, deadline: Instant) -> bool {
++    let mut bindings = HashMap::new();
++    for item in selected {
++        for (&var, &value) in &item.bindings {
++            if bindings
++                .insert(var, value)
++                .is_some_and(|previous| previous != value)
++            {
++                return false;
++            }
++        }
++    }
++    let results: Vec<_> = selected
++        .iter()
++        .map(|item| ResultMatch {
++            value: item.id,
++            operands: item.bindings.values().copied().collect(),
++        })
++        .collect();
++    // Same feasibility rule as generated ISA preconditions; this snapshot is
++    // only an early discovery filter, never authorization for a later match.
++    derivations.inputs_available(&results, Some(deadline))
++}
++
++/// Candidate registration is persistent; matching and derivations are snapshots.
++/// The global tuple cap is shared by all refreshes, not reset by each hook.
++pub struct Discovery {
++    spaces: Vec<Space>,
++    derivations: Derivations,
++    seen: HashSet<Vec<Id>>,
++    cursor: usize,
++    attempts: usize,
++    limit: usize,
++}
++
++impl Discovery {
++    pub fn exhausted(&self) -> bool {
++        self.seen.len() >= self.limit
++            || self.attempts >= self.limit.saturating_mul(64)
++            || self.spaces.iter().all(|space| space.cursor >= space.total)
++    }
++
++    pub fn new(graph: &EGraph<TensorOp, TensorInfo>, limit: usize) -> Self {
++        let mut discovery = Self {
++            spaces: vec![],
++            derivations: Derivations::default(),
++            seen: HashSet::new(),
++            cursor: 0,
++            attempts: 0,
++            limit,
++        };
++        discovery.refresh(graph);
++        discovery
++    }
++
++    /// Call after rebuild, even when no new e-class was created: a union can
++    /// expose new pattern matches and new independent operand derivations.
++    pub fn refresh(&mut self, graph: &EGraph<TensorOp, TensorInfo>) {
++        self.seen = self
++            .seen
++            .iter()
++            .map(|ids| ids.iter().map(|&id| graph.find(id)).collect())
++            .collect();
++        self.spaces.clear();
++        self.attempts = 0;
++        if self.seen.len() >= self.limit {
++            return;
++        }
++        let mut spaces = vec![];
++        for (_, patterns) in rewrites::multi_result_typed_patterns() {
++            let choices: Vec<Vec<Match>> = patterns
++                .iter()
++                .map(|(text, dtype, shape)| {
++                    let pattern: Pattern<TensorOp> = text.parse().unwrap();
++                    let vars = pattern.vars();
++                    let mut result = vec![];
++                    for matched in pattern.search(graph) {
++                        if crate::ir::egraph::tuple_elements(graph, matched.eclass).is_some() {
++                            continue;
++                        }
++                        let info = &graph[matched.eclass].data;
++                        if info.dtype != *dtype
++                            || info.shape.len() != shape.len()
++                            || info.shape.iter().zip(shape).any(|(actual, required)| {
++                                required.is_some_and(|required| *actual != required)
++                            })
++                        {
++                            continue;
++                        }
++                        for subst in matched.substs {
++                            let mut bindings = HashMap::new();
++                            let consistent = vars.iter().all(|&var| {
++                                let text = var.to_string();
++                                let canonical: Var =
++                                    text.split("__use").next().unwrap().parse().unwrap();
++                                let value = graph.find(subst[var]);
++                                bindings
++                                    .insert(canonical, value)
++                                    .is_none_or(|previous| previous == value)
++                            });
++                            if !consistent {
++                                continue;
++                            }
++                            result.push(Match {
++                                id: matched.eclass,
++                                bindings,
++                            });
++                        }
++                    }
++                    result.sort_by_key(|item| item.id);
++                    result
++                })
++                .collect();
++            let total = choices
++                .iter()
++                .fold(1usize, |total, choices| total.saturating_mul(choices.len()));
++            spaces.push(Space {
++                choices,
++                cursor: 0,
++                total,
++            });
++        }
++        self.spaces = spaces;
++        self.derivations = Derivations::new(graph);
++    }
++
++    pub fn batch(
++        &mut self,
++        graph: &mut EGraph<TensorOp, TensorInfo>,
++        count: usize,
++        deadline: Instant,
++    ) -> usize {
++        let mut added = 0;
++        if self.spaces.is_empty() {
++            return 0;
++        }
++        let start = self.cursor;
++        let index = loop {
++            let index = self.cursor % self.spaces.len();
++            self.cursor += 1;
++            if self.spaces[index].cursor < self.spaces[index].total {
++                break index;
++            }
++            if self.cursor - start >= self.spaces.len() {
++                return 0;
++            }
++        };
++        while added < count
++            && self.seen.len() < self.limit
++            && self.attempts < self.limit.saturating_mul(64)
++            && Instant::now() < deadline
++        {
++            let Some(selected) = self.spaces[index].next() else {
++                break;
++            };
++            self.attempts += 1;
++            let children: Vec<_> = selected.iter().map(|item| graph.find(item.id)).collect();
++            if self.seen.contains(&children) {
++                continue;
++            }
++            if !compatible(&selected, &mut self.derivations, deadline) {
++                continue;
++            }
++            self.seen.insert(children.clone());
++            let tuple = graph.add(TensorOp::OpTuple(children.clone()));
++            for (index, value) in children.into_iter().enumerate() {
++                let info = graph[value].data.clone();
++                let projection = graph.add(TensorOp::OpGetTupleElement(index, [tuple]));
++                graph[projection].data = info;
++                graph.union(value, projection);
++            }
++            added += 1;
++        }
++        graph.rebuild();
++        added
++    }
++}
+diff --git a/act_backend/generic/src/isel/mod.rs b/act_backend/generic/src/isel/mod.rs
+index 96a7c29fa10a9eea542038f3969b58589af6368c..6c8ab0fde71655d107fe458e21a5f8430d886c82 100644
+--- a/act_backend/generic/src/isel/mod.rs
++++ b/act_backend/generic/src/isel/mod.rs
+@@ -1,3 +1,4 @@
+ pub mod extractor;
++pub mod discovery;
+ pub mod initializer;
+ pub mod rewrites;
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+index 3fb587c19d1840ddb5a2949353bcac7c6d142ff5..1021d0f221b2304f8a1819c7bbaf9e95e30708ae 100644
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -272,7 +272,7 @@ fn main() {
+     println!("Starting Phase 1 Module 1: E-Graph Initializer...");
+     println!();
+ 
+-    let (init_egraph, hbm_offsets, root, inputs, metadata, outputs) =
++    let (mut init_egraph, hbm_offsets, root, inputs, metadata, outputs) =
+         isel::initializer::parse_hlo_module_to_egraph(&hlo_path).unwrap();
+ 
+     println!("HBM Offsets: {:?}", hbm_offsets);
+@@ -284,6 +284,15 @@ fn main() {
+     let metadata_path = log_dir.join("metadata.json");
+     metadata.save(&metadata_path);
+ 
++    // Multi-result semantics may match independent values even when the input
++    // HLO has no explicit tuple. Refresh logical links at every Runner boundary;
++    // generated IR-to-ISA rewrites still create all instruction candidates.
++    init_egraph.rebuild();
++    let joint_limit = env::var("ACT_JOINT_LIMIT").ok()
++        .map(|text| text.parse::<usize>().expect("Invalid ACT_JOINT_LIMIT"))
++        .unwrap_or(64);
++    let mut discovery = isel::discovery::Discovery::new(&init_egraph, joint_limit);
++
+     let mut limit: usize = SLOW_LIMIT_START;
+ 
+     let rules = isel::rewrites::get_rewrites();
+@@ -303,6 +312,16 @@ fn main() {
+             .with_egraph(init_egraph)
+             .with_node_limit(5000)
+             .with_time_limit(TIME_LIMIT)
++            .with_hook(move |runner| {
++                // The preceding iteration may have added or merged matches.
++                // Drain this bounded snapshot before allowing saturation.
++                runner.egraph.rebuild();
++                if !runner.iterations.is_empty() { discovery.refresh(&runner.egraph); }
++                while !discovery.exhausted() && start.elapsed() < TIME_LIMIT {
++                    discovery.batch(&mut runner.egraph, joint_limit, start + TIME_LIMIT);
++                }
++                Ok(())
++            })
+             .with_hook(move |runner| {
+                 PROCESSED.lock().unwrap().clear();
+                 if runner.iterations.len() % N == 0 && runner.iterations.len() > 0 {

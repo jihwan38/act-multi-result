@@ -1,0 +1,1368 @@
+diff --git a/act_backend/generic/cpp/malloc/include/emitter.h b/act_backend/generic/cpp/malloc/include/emitter.h
+index 09678d6885a1e83afc3faf597312dbcfc02f2a4c..519ab48fd89ccb5c59f9ba21f79bca48aa3054b7 100644
+--- a/act_backend/generic/cpp/malloc/include/emitter.h
++++ b/act_backend/generic/cpp/malloc/include/emitter.h
+@@ -37,6 +37,8 @@ public:
+   std::vector<MetaDataInfo> input_info;
+   std::vector<MetaDataInfo> output_info;
+   std::vector<MetaDataInfo> constant_info;
++  nlohmann::json input_tree;
++  nlohmann::json output_tree;
+ 
+   MetaData(std::ifstream &metadata_path,
+            const std::unordered_map<std::string, Tensor *> &tensor_map,
+diff --git a/act_backend/generic/cpp/malloc/include/instructions.h b/act_backend/generic/cpp/malloc/include/instructions.h
+index 090d8f379914e75d8f7327cf45f761c89cec4cb5..f1102a7bffb7d9446541c9d73b060bbd3236f2e7 100644
+--- a/act_backend/generic/cpp/malloc/include/instructions.h
++++ b/act_backend/generic/cpp/malloc/include/instructions.h
+@@ -17,14 +17,21 @@ class Instruction {
+ protected:
+   std::string op_name;
+   Tensor *y;
++  std::vector<Tensor *> Y;
+   std::vector<Tensor *> X;
+ 
+ public:
+   Instruction(const std::string &op_name, Tensor *y,
+               const std::vector<Tensor *> &X)
+-      : op_name(op_name), y(y), X(X) {
+-    if (y != nullptr)
+-      y->set_defined_by(this);
++      : Instruction(op_name, std::vector<Tensor *>{y}, X) {}
++
++  Instruction(const std::string &op_name, const std::vector<Tensor *> &Y,
++              const std::vector<Tensor *> &X)
++      : op_name(op_name), y(Y.size() == 1 ? Y[0] : nullptr), Y(Y), X(X) {
++    for (auto *result : Y) {
++      if (!result) throw std::runtime_error("Null instruction result");
++      result->set_defined_by(this);
++    }
+     for (auto *x : X) {
+       if (x != nullptr)
+         x->add_used_by(this);
+@@ -37,6 +44,11 @@ public:
+   virtual std::string str() = 0;
+ 
+   virtual Tensor *get_lhs() { return y; }
++  const std::vector<Tensor *> &get_outputs() const { return Y; }
++  virtual bool is_view() const { return false; }
++  virtual bool allows_inplace(size_t output, size_t input) const { return false; }
++  auto output_region(size_t index) { return get_h(index); }
++  auto input_region(size_t index) { return get_h(Y.size() + index); }
+ 
+   virtual std::vector<Tensor *> get_rhs() { return X; }
+   virtual std::vector<bool> get_rhs_inplace() {
+@@ -81,6 +93,7 @@ private:
+   }
+ 
+ public:
++  bool is_view() const override { return true; }
+   Slice(Tensor *y, std::vector<Tensor *> X,
+         const std::vector<std::pair<int64, int64>> &slices)
+       : Instruction("slice", y, X), slices(slices) {
+@@ -185,6 +198,7 @@ private:
+   }
+ 
+ public:
++  bool is_view() const override { return true; }
+   Concat(Tensor *y, std::vector<Tensor *> X, int64 dimension)
+       : Instruction("concat", y, X), dimension(dimension) {
+     assert(y != nullptr);
+diff --git a/act_backend/generic/cpp/malloc/include/parser.h b/act_backend/generic/cpp/malloc/include/parser.h
+index 531e600e99dd637f2fd32f025692da1d86d1959f..277ac2588e1f27de2cdbdc64f22e22170c4d0e2d 100644
+--- a/act_backend/generic/cpp/malloc/include/parser.h
++++ b/act_backend/generic/cpp/malloc/include/parser.h
+@@ -13,8 +13,10 @@
+ namespace parser {
+ 
+ struct ParsedLine {
++  std::vector<ParsedLine> additional_results;
+   std::string lhs_variable_name = "";
+   std::string lhs_storage_name = "";
++  std::string lhs_dtype = "";
+   int64 lhs_offset = -1; // -1 means not specified
+   std::vector<int64> lhs_shape = {};
+   std::string op_name = "";
+diff --git a/act_backend/generic/cpp/malloc/include/scheduler.h b/act_backend/generic/cpp/malloc/include/scheduler.h
+index 2f63a34683cd6e563313bc89887b41dedbbfc637..5a042651819ea3ae2266e15c4f1eb051eff4efe6 100644
+--- a/act_backend/generic/cpp/malloc/include/scheduler.h
++++ b/act_backend/generic/cpp/malloc/include/scheduler.h
+@@ -16,7 +16,7 @@ using EsunCache =
+ namespace scheduler {
+ 
+ std::vector<Instruction *>
+-topological(const std::vector<Instruction *> &instructions, Instruction *root,
++topological(const std::vector<Instruction *> &instructions, const std::vector<Instruction *> &roots,
+             const std::vector<std::string> &buffer_name);
+ 
+ } // namespace scheduler
+diff --git a/act_backend/generic/cpp/malloc/include/solver.h b/act_backend/generic/cpp/malloc/include/solver.h
+index a60b7315f329c3dd13f05bd8df1eaa4df7880d02..3f6ab2d757fd1003b7dc73bd62a3c874c6065347 100644
+--- a/act_backend/generic/cpp/malloc/include/solver.h
++++ b/act_backend/generic/cpp/malloc/include/solver.h
+@@ -6,7 +6,10 @@
+ typedef int64_t int64;
+ typedef uint64_t uint64;
+ 
+-extern operations_research::Solver solver;
++operations_research::Solver &allocation_solver();
++void initialize_allocation();
++void clear_allocation();
++#define solver (allocation_solver())
+ 
+ #define MAKE_INT_VAR(a, b) (solver.MakeIntVar((a), (b)))
+ #define MAKE_INT_KNOWN(a) (solver.MakeIntVar((a), (a)))
+diff --git a/act_backend/generic/cpp/malloc/include/storage.h b/act_backend/generic/cpp/malloc/include/storage.h
+index 81524c8699a3a488467656b06d61a611c8ee59c4..0d7567d987aee92797b8df9c6a411d19a2e81bc3 100644
+--- a/act_backend/generic/cpp/malloc/include/storage.h
++++ b/act_backend/generic/cpp/malloc/include/storage.h
+@@ -4,6 +4,7 @@
+ #include <map>
+ #include <string>
+ #include <vector>
++#include <stdexcept>
+ 
+ #include "solver.h"
+ 
+@@ -14,13 +15,15 @@ private:
+ 
+   size_t addressing_dims;
+   size_t non_addressing_dims;
++  std::vector<int64> unit_shape;
++  std::string dtype;
+ 
+ public:
+   Storage(const std::string &name,
+           const std::vector<int64> &addressing_capacity_,
+-          const int non_addressing_dims)
++          const std::vector<int64> &unit_shape, const std::string &dtype)
+       : name(name), addressing_dims(addressing_capacity_.size()),
+-        non_addressing_dims(non_addressing_dims) {
++        non_addressing_dims(unit_shape.size()), unit_shape(unit_shape), dtype(dtype) {
+     this->addressing_capacity.reserve(addressing_capacity_.size());
+     for (auto cap : addressing_capacity_) {
+       this->addressing_capacity.push_back(MAKE_INT_KNOWN(cap));
+@@ -28,6 +31,8 @@ public:
+   }
+ 
+   std::string get_name() const { return name; }
++  const auto &get_unit_shape() const { return unit_shape; }
++  const auto &get_dtype() const { return dtype; }
+   operations_research::IntVar *get_capacity(int dim) const {
+     return addressing_capacity[dim];
+   }
+diff --git a/act_backend/generic/cpp/malloc/include/tensor.h b/act_backend/generic/cpp/malloc/include/tensor.h
+index 85a109691880ea8c07c5fcdc30ade796c656441f..e37432a8d0885ae3d5cc6b5746dd8e59b62edf05 100644
+--- a/act_backend/generic/cpp/malloc/include/tensor.h
++++ b/act_backend/generic/cpp/malloc/include/tensor.h
+@@ -15,6 +15,8 @@ private:
+ 
+   Storage *storage;
+   std::vector<int64> sizes;
++  std::vector<int64> shape;
++  std::string dtype;
+   std::vector<operations_research::IntVar *> offsets;
+   Instruction *defined_by;
+   std::vector<Instruction *> used_by;
+@@ -24,10 +26,16 @@ public:
+   node_type type;
+ 
+   Tensor(const std::string &name, Storage *storage,
+-         const std::vector<int64> &shape)
+-      : name(name), storage(storage) {
++         const std::vector<int64> &shape, const std::string &dtype)
++      : name(name), storage(storage), shape(shape), dtype(dtype) {
+ 
+-    assert(shape.size() == storage->get_total_dims());
++    if (shape.size() != storage->get_total_dims() || dtype != storage->get_dtype())
++      throw std::runtime_error("Tensor/storage rank or dtype mismatch: " + name);
++    for (auto size : shape)
++      if (size <= 0) throw std::runtime_error("Nonpositive tensor dimension");
++    if (!std::equal(storage->get_unit_shape().begin(), storage->get_unit_shape().end(),
++                    shape.begin() + storage->get_addressing_dims()))
++      throw std::runtime_error("Tensor/storage unit shape mismatch: " + name);
+ 
+     sizes.reserve(storage->get_addressing_dims());
+     offsets.reserve(storage->get_addressing_dims());
+@@ -38,6 +46,8 @@ public:
+       int64 max_off = cap - sizes[i];
+       if (max_off < 0) max_off = 0;
+       offsets.push_back(MAKE_INT_VAR(0, max_off));
++      // Oversized tensors make a candidate infeasible, never out of bounds.
++      solver.AddConstraint(MAKE_LESS_OR_EQUAL(MAKE_SUM(offsets.back(), sizes.back()), cap));
+     }
+ 
+     defined_by = nullptr;
+@@ -48,6 +58,8 @@ public:
+   Storage *get_storage() const { return storage; }
+ 
+   std::vector<int64> get_sizes() const { return sizes; }
++  const auto &get_shape() const { return shape; }
++  const auto &get_dtype() const { return dtype; }
+   std::vector<operations_research::IntVar *> get_offsets() const {
+     return offsets;
+   }
+diff --git a/act_backend/generic/cpp/malloc/src/act_malloc.cc b/act_backend/generic/cpp/malloc/src/act_malloc.cc
+index 650e404a5036c50b9821f2899debe50a27ce1982..d3ce1df36ef797d499c6def6284f90191a9f7577 100644
+--- a/act_backend/generic/cpp/malloc/src/act_malloc.cc
++++ b/act_backend/generic/cpp/malloc/src/act_malloc.cc
+@@ -7,24 +7,55 @@
+ #include <vector>
+ 
+ #include "act_malloc.h"
++#include <filesystem>
++#include <mutex>
+ 
+-extern "C" int act_malloc(char *pii_path, char *metadata_path, char *asm_path) {
++namespace {
++struct AllocationSession {
++  std::unordered_map<std::string, Tensor *> tensors;
++  std::vector<Instruction *> instructions;
++  AllocationSession() { initialize_allocation(); }
++  ~AllocationSession() {
++    for (auto *instruction : instructions) delete instruction;
++    for (auto &entry : tensors) delete entry.second;
++    clear_allocation();
++  }
++};
++}
++
++static int allocate_impl(char *pii_path, char *metadata_path, char *asm_path) {
++  if (std::filesystem::exists(asm_path)) throw std::runtime_error("Refusing to overwrite assembly candidate");
++  AllocationSession session;
+   std::ifstream pii_file(pii_path);
+   if (!pii_file) {
+     std::cerr << "Failed to open file: " << pii_path << std::endl;
+     return 1;
+   }
+ 
+-  std::unordered_map<std::string, Tensor *> tensor_map;
++  auto &tensor_map = session.tensors;
+   std::unordered_map<Tensor *, int64> known_offsets;
+   std::unordered_map<Tensor *, std::string> known_constants;
+-  std::vector<Instruction *> instructions;
++  auto &instructions = session.instructions;
++  std::vector<std::string> output_names;
++  bool explicit_outputs = false;
+ 
+   std::string line;
+   while (std::getline(pii_file, line)) {
+     // trim
+     line.erase(0, line.find_first_not_of(" \t\r\n"));
+     line.erase(line.find_last_not_of(" \t\r\n") + 1);
++    if (line.rfind("# outputs:", 0) == 0) {
++      if (explicit_outputs) throw std::runtime_error("Repeated output declaration");
++      explicit_outputs = true;
++      std::stringstream outputs(line.substr(10));
++      std::string name;
++      while (std::getline(outputs, name, ',')) {
++        name.erase(0, name.find_first_not_of(" \t"));
++        name.erase(name.find_last_not_of(" \t") + 1);
++        if (name.empty()) throw std::runtime_error("Empty output name");
++        output_names.push_back(name);
++      }
++    }
+     if (line.empty() || line[0] == '#')
+       continue;
+ 
+@@ -34,14 +65,44 @@ extern "C" int act_malloc(char *pii_path, char *metadata_path, char *asm_path) {
+       instructions.push_back(instr);
+   }
+ 
+-  Instruction *root = instructions.back();
+-  root->get_lhs()->type = Tensor::node_type::OUTPUT;
++  // Old single-output PII omitted the explicit output list.
++  if (!explicit_outputs && !instructions.empty()) {
++    if (instructions.back()->get_outputs().size() != 1)
++      throw std::runtime_error("Multi-result PII requires explicit program outputs");
++    output_names.push_back(instructions.back()->get_outputs()[0]->get_name());
++  }
++  std::ifstream metadata_input(metadata_path);
++  nlohmann::json metadata_json;
++  metadata_input >> metadata_json;
++  if (output_names.empty() && (!explicit_outputs || !instructions.empty()
++      || !tensor_map.empty() || !metadata_json.contains("output_tree")))
++    throw std::runtime_error("Empty program requires an explicit empty PII and logical output tree");
++  if (metadata_json.at("output").size() != output_names.size())
++    throw std::runtime_error("PII/metadata output count mismatch");
++  std::vector<Instruction *> roots;
++  std::map<std::string, int64> dtype_bytes{{"jnp.uint8",1},{"jnp.int8",1},
++    {"jnp.bfloat16",2},{"jnp.float16",2},{"jnp.uint16",2},{"jnp.int16",2},
++    {"jnp.float32",4},{"jnp.uint32",4},{"jnp.int32",4},
++    {"jnp.float64",8},{"jnp.uint64",8},{"jnp.int64",8}};
++  for (size_t index = 0; index < output_names.size(); ++index) {
++    auto *tensor = tensor_map.at(output_names[index]);
++    const auto &output = metadata_json.at("output").at(index);
++    int64 bytes = dtype_bytes.at(output.at("dtype").get<std::string>());
++    for (const auto &dim : output.at("shape")) bytes *= dim.get<int64>();
++    if (tensor->get_storage()->get_name() != "HBM" || !known_offsets.count(tensor)
++        || known_offsets.at(tensor) != output.at("addr").get<int64>()
++        || tensor->get_sizes() != std::vector<int64>{bytes})
++      throw std::runtime_error("PII/metadata output address or byte size mismatch");
++    tensor->type = Tensor::node_type::OUTPUT;
++    if (auto *producer = tensor->get_defined_by())
++      if (std::find(roots.begin(), roots.end(), producer) == roots.end()) roots.push_back(producer);
++  }
+ 
+   std::cout << "Starting Phase 2 Module 4: Topological Ordering Generator..."
+             << std::endl;
+ 
+   auto scheduled =
+-      scheduler::topological(instructions, root, {{{BUFFER_NAMES}}});
++      scheduler::topological(instructions, roots, {{{BUFFER_NAMES}}});
+   if (scheduled.size() != instructions.size()) {
+     std::cerr << "Warning: scheduled instructions size (" << scheduled.size()
+               << ") does not match original instructions size ("
+@@ -90,7 +151,7 @@ extern "C" int act_malloc(char *pii_path, char *metadata_path, char *asm_path) {
+                 return w_a < w_b;
+               return a->Min() < b->Min();
+             });
+-  std::cout << "Starting Phase 2 Module X: Google OR-Tools CP-SAT solver..."
++  std::cout << "Starting Phase 2 Module X: Google OR-Tools constraint solver..."
+             << std::endl;
+ 
+   auto decision_builder = solver.MakePhase(
+@@ -100,6 +161,9 @@ extern "C" int act_malloc(char *pii_path, char *metadata_path, char *asm_path) {
+   // Add a conservative time limit (0.5 seconds) to prevent long hangs
+   auto time_limit = solver.MakeTimeLimit(absl::Milliseconds(500));
+   solver.NewSearch(decision_builder, time_limit);
++  struct SearchGuard {
++    ~SearchGuard() { solver.EndSearch(); }
++  } search_guard;
+   if (solver.NextSolution()) {
+     std::cout << "Found a solution!" << std::endl;
+ 
+@@ -113,14 +177,54 @@ extern "C" int act_malloc(char *pii_path, char *metadata_path, char *asm_path) {
+     emitter::MetaData metadata(metadata_file, tensor_map, known_constants);
+ 
+     if (emitter::assembly_dump(asm_path, scheduled, metadata)) {
++      // Evidence for independent validation of every result port and lifetime.
++      nlohmann::json audit;
++      audit["allocator"] = "ACT C++ / OR-Tools constraint_solver";
++      audit["outputs"] = output_names;
++      audit["tensors"] = nlohmann::json::object();
++      audit["input_tree"] = metadata.input_tree;
++      audit["output_tree"] = metadata.output_tree;
++      audit["instructions"] = nlohmann::json::array();
++      for (auto *instr : scheduled) {
++        nlohmann::json node;
++        node["op"] = instr->get_op_name();
++        node["assembly"] = instr->str();
++        node["view"] = instr->is_view();
++        node["inputs"] = nlohmann::json::array();
++        node["outputs"] = nlohmann::json::array();
++        node["inplace"] = nlohmann::json::array();
++        for (auto *input : instr->get_rhs()) node["inputs"].push_back(input->get_name());
++        for (auto *output : instr->get_outputs()) node["outputs"].push_back(output->get_name());
++        for (size_t o = 0; o < instr->get_outputs().size(); ++o)
++          for (size_t i = 0; i < instr->get_rhs().size(); ++i)
++            if (instr->allows_inplace(o, i)) node["inplace"].push_back({o, i});
++        audit["instructions"].push_back(node);
++      }
++      for (const auto &entry : tensor_map) {
++        auto *tensor = entry.second;
++        auto range = compute_live_range(tensor, scheduled);
++        auto &value = audit["tensors"][entry.first];
++        value["buffer"] = tensor->get_storage()->get_name();
++        value["dtype"] = tensor->get_dtype();
++        value["shape"] = tensor->get_shape();
++        value["sizes"] = tensor->get_sizes();
++        value["live"] = {range.first, range.second};
++        value["input"] = !tensor->get_defined_by();
++        value["offsets"] = nlohmann::json::array();
++        value["capacity"] = nlohmann::json::array();
++        for (size_t dim = 0; dim < tensor->get_offsets().size(); ++dim) {
++          value["offsets"].push_back(tensor->get_offsets()[dim]->Value());
++          value["capacity"].push_back(tensor->get_storage()->get_capacity(dim)->Value());
++        }
++      }
++      std::ofstream audit_file(std::string(asm_path) + ".allocation.json");
++      audit_file << audit.dump(2) << '\n';
+       std::cout << "New ASM candidate generated: " << asm_path << std::endl
+                 << std::endl;
+-      solver.EndSearch();
+       return 0;
+     }
+ 
+     std::cout << "No ASM candidate generated." << std::endl << std::endl;
+-    solver.EndSearch();
+     return 1;
+ 
+   } else {
+@@ -129,7 +233,16 @@ extern "C" int act_malloc(char *pii_path, char *metadata_path, char *asm_path) {
+     std::cout << "Starting Phase 2 Module 6: Code Emitter..." << std::endl;
+     std::cout << "No ASM candidate generated." << std::endl << std::endl;
+ 
+-    solver.EndSearch();
++    return 1;
++  }
++}
++
++extern "C" int act_malloc(char *pii_path, char *metadata_path, char *asm_path) {
++  static std::mutex allocation_mutex;
++  std::lock_guard<std::mutex> lock(allocation_mutex);
++  try { return allocate_impl(pii_path, metadata_path, asm_path); }
++  catch (const std::exception &error) {
++    std::cerr << "ACT allocation rejected: " << error.what() << std::endl;
+     return 1;
+   }
+ }
+diff --git a/act_backend/generic/cpp/malloc/src/constraint.cc b/act_backend/generic/cpp/malloc/src/constraint.cc
+index 8d0a4536f0e5ef0c0b85275199d122d31fa74b89..9ec89a796edfc1d020a0657f759c554b434f2e41 100644
+--- a/act_backend/generic/cpp/malloc/src/constraint.cc
++++ b/act_backend/generic/cpp/malloc/src/constraint.cc
+@@ -1,253 +1,136 @@
+ #include "constraint.h"
++#include <unordered_set>
+ 
+ namespace constraint {
+ 
+ void pii_node_constraints(const std::vector<Instruction *> &instructions) {
+-  for (const auto &instr : instructions) {
+-    // Instruction constraints: 𝑒(𝛼,𝛽)
+-
+-    Constraints constraints = instr->get_e();
+-
+-    for (auto *constraint : constraints) {
+-      solver.AddConstraint(constraint);
+-    }
+-
+-    // LHS Tensor addresses: (𝐼𝑠(𝑦),𝐼𝑒(𝑦)) = ℎ(0)(𝛽)
+-
+-    auto lhs_tensor = instr->get_lhs();
+-    auto lhs_offsets = lhs_tensor->get_offsets();
+-    auto lhs_size = lhs_tensor->get_sizes();
+-    auto h0 = instr->get_h(0);
+-
+-    for (size_t i = 0; i < lhs_offsets.size(); ++i) {
+-      solver.AddConstraint(MAKE_EQUALITY(h0[i].first, lhs_offsets[i]));
+-      solver.AddConstraint(
+-          MAKE_EQUALITY(h0[i].second, MAKE_SUM(lhs_offsets[i], lhs_size[i])));
++  for (auto *instr : instructions) {
++    for (auto *constraint : instr->get_e()) solver.AddConstraint(constraint);
++    for (size_t result = 0; result < instr->get_outputs().size(); ++result) {
++      auto *tensor = instr->get_outputs()[result];
++      auto offsets = tensor->get_offsets();
++      auto sizes = tensor->get_sizes();
++      auto region = instr->output_region(result);
++      if (region.size() != offsets.size()) throw std::runtime_error("Output region rank mismatch");
++      for (size_t dim = 0; dim < offsets.size(); ++dim) {
++        solver.AddConstraint(MAKE_EQUALITY(region[dim].first, offsets[dim]));
++        solver.AddConstraint(MAKE_EQUALITY(region[dim].second, MAKE_SUM(offsets[dim], sizes[dim])));
++      }
+     }
+   }
+ }
+ 
+ void def_use_constraints(const std::vector<Instruction *> &instructions) {
+-  for (const auto &instr : instructions) {
+-    // RHS Tensor addresses: (𝐼𝑠(𝑥𝑖), 𝐼𝑒(𝑥𝑖)) = ℎ(𝑖)(𝛽)
+-
+-    auto rhs_tensors = instr->get_rhs();
+-    for (size_t i = 0; i < rhs_tensors.size(); ++i) {
+-      auto offsets = rhs_tensors[i]->get_offsets();
+-      auto sizes = rhs_tensors[i]->get_sizes();
+-      auto h_i = instr->get_h(i + 1);
+-
+-      for (size_t j = 0; j < offsets.size(); ++j) {
+-        solver.AddConstraint(MAKE_EQUALITY(h_i[j].first, offsets[j]));
+-        solver.AddConstraint(
+-            MAKE_EQUALITY(h_i[j].second, MAKE_SUM(offsets[j], sizes[j])));
++  for (auto *instr : instructions) {
++    auto inputs = instr->get_rhs();
++    for (size_t input = 0; input < inputs.size(); ++input) {
++      auto offsets = inputs[input]->get_offsets();
++      auto sizes = inputs[input]->get_sizes();
++      auto region = instr->input_region(input);
++      if (region.size() != offsets.size()) throw std::runtime_error("Input region rank mismatch");
++      for (size_t dim = 0; dim < offsets.size(); ++dim) {
++        solver.AddConstraint(MAKE_EQUALITY(region[dim].first, offsets[dim]));
++        solver.AddConstraint(MAKE_EQUALITY(region[dim].second, MAKE_SUM(offsets[dim], sizes[dim])));
+       }
+     }
+   }
+ }
+ 
+-void initial_constraints(
+-    const std::unordered_map<Tensor *, int64> &known_offsets) {
++void initial_constraints(const std::unordered_map<Tensor *, int64> &known_offsets) {
+   for (const auto &pair : known_offsets) {
+-    // Input & Output Tensor addresses: 𝐼𝑠(𝑥𝑖) = 𝑐𝑜𝑛𝑠𝑡
+-
+-    Tensor *tensor = pair.first;
+-    int64 offset = pair.second;
+-    auto offsets = tensor->get_offsets();
+-    assert(offsets.size() == 1); // Expected to be in "HBM"
+-
+-    solver.AddConstraint(MAKE_EQUALITY(offsets[0], offset));
++    auto offsets = pair.first->get_offsets();
++    if (offsets.size() != 1) throw std::runtime_error("Fixed offsets require byte-addressed HBM");
++    solver.AddConstraint(MAKE_EQUALITY(offsets[0], pair.second));
+   }
+ }
+ 
+-void overlap_constraints(
+-    const std::vector<Instruction *> &instructions,
+-    const std::unordered_map<std::string, Tensor *> &tensor_map,
+-    std::vector<IntVar *> &new_vars) {
+-
+-  // Compute live ranges for all tensors
+-  std::unordered_map<Tensor *, LiveRange> live_ranges;
+-  live_ranges.reserve(tensor_map.size());
+-  for (auto &pair : tensor_map) {
+-    Tensor *t = pair.second;
+-    live_ranges[t] = compute_live_range(t, instructions);
+-  }
+-
+-  // Build interference graph
+-  InterferenceGraph interference_graph = build_interference_graph(live_ranges);
+-
+-  // Add non-overlapping constraints for each edge in the interference graph
+-  for (const auto &edge : interference_graph) {
+-    Tensor *t1 = edge.first;
+-    Tensor *t2 = edge.second;
+-    auto offsets1 = t1->get_offsets();
+-    auto sizes1 = t1->get_sizes();
+-    auto offsets2 = t2->get_offsets();
+-    auto sizes2 = t2->get_sizes();
+-
+-    size_t dims = offsets1.size();
+-    assert(dims == offsets2.size());
+-    assert(dims == sizes1.size());
+-    assert(dims == sizes2.size());
+-
+-    // Non-overlapping constraint: (𝐼𝑒(𝑥1) ≤ 𝐼𝑠(𝑥2)) ∨ (𝐼𝑒(𝑥2) ≤ 𝐼𝑠(𝑥1))
+-
+-    for (size_t i = 0; i < dims; ++i) {
+-      auto end1 = MAKE_SUM(offsets1[i], sizes1[i]);
+-      auto end2 = MAKE_SUM(offsets2[i], sizes2[i]);
+-
+-      // b1 == (end1 <= offsets2) ; b2 == (end2 <= offsets1)
+-      // Enforce (b1 OR b2) by requiring b1 + b2 >= 1
+-      IntVar *b1 = solver.MakeIsLessOrEqualVar(end1, offsets2[i]);
+-      IntVar *b2 = solver.MakeIsLessOrEqualVar(end2, offsets1[i]);
+-      solver.AddConstraint(solver.MakeGreaterOrEqual(
+-          solver.MakeSum(std::vector<IntVar *>{b1, b2}), int64_t(1)));
+-      new_vars.push_back(b1);
+-      new_vars.push_back(b2);
++void overlap_constraints(const std::vector<Instruction *> &instructions,
++                         const std::unordered_map<std::string, Tensor *> &tensor_map,
++                         std::vector<IntVar *> &new_vars) {
++  std::unordered_map<Tensor *, LiveRange> ranges;
++  std::unordered_map<Tensor *, std::vector<Tensor *>> aliases;
++  for (const auto &entry : tensor_map) ranges[entry.second] = compute_live_range(entry.second, instructions);
++  // Slice/Concat are storage views, not writes. Keep backing storage alive
++  // through all uses of connected views, including a returned program output.
++  for (auto *instr : instructions) if (instr->is_view()) {
++    auto *out = instr->get_outputs().at(0);
++    for (auto *input : instr->get_rhs()) {
++      aliases[out].push_back(input);
++      aliases[input].push_back(out);
+     }
+   }
+-}
+-
+-} // namespace constraint
+-
+-// Note that instructions are ordered from 1 to N
+-// where 1 is the first instruction to be executed
+-// and N is the last instruction to be executed
+-// 0 refers to the time before any instruction is executed, i.e., initial state
+-LiveRange compute_live_range(Tensor *a,
+-                             const std::vector<Instruction *> &instructions) {
+-  // Helper lambdas
+-  // (i) panic with error message
+-  auto panic = [&](const std::string &msg) -> LiveRange {
+-    std::cerr << "live_range error: " << msg << std::endl;
+-    assert(false && "unreachable");
+-    return {0, 0};
+-  };
+-
+-  // If INPUT, then live range is [0, N]
+-  if (a->type == Tensor::node_type::INPUT) {
+-    return {0, instructions.size()};
+-  }
+-
+-  // If CONSTANT, then live range is [0, b]
+-  // where b is the last instruction that uses it
+-  if (a->type == Tensor::node_type::CONSTANT) {
+-    auto uses = a->get_used_by();
+-    if (uses.empty())
+-      return panic("constant tensor has no uses");
+-
+-    size_t last_use = 0;
+-    for (const auto &instr : uses) {
+-      auto it = std::find(instructions.begin(), instructions.end(), instr);
+-      if (it != instructions.end()) {
+-        size_t index = std::distance(instructions.begin(), it);
+-        if (index > last_use) {
+-          last_use = index;
+-        }
+-      } else {
+-        return panic("instruction using constant tensor not found in list.");
+-      }
++  std::unordered_map<Tensor *, Tensor *> components;
++  for (const auto &entry : tensor_map) {
++    auto *tensor = entry.second;
++    if (components.count(tensor)) continue;
++    std::vector<Tensor *> pending{tensor}, members;
++    LiveRange combined = ranges.at(tensor);
++    while (!pending.empty()) {
++      auto *current = pending.back();
++      pending.pop_back();
++      if (!components.emplace(current, tensor).second) continue;
++      members.push_back(current);
++      combined.first = std::min(combined.first, ranges.at(current).first);
++      combined.second = std::max(combined.second, ranges.at(current).second);
++      for (auto *alias : aliases[current]) pending.push_back(alias);
+     }
+-
+-    return {0, last_use + 1};
++    for (auto *member : members) ranges[member] = combined;
+   }
+ 
+-  // If INTERMEDIATE, then live range is [a, b]
+-  // where a is the instruction that defines it
+-  // and b is the last instruction that uses it
+-  if (a->type == Tensor::node_type::INTERMEDIATE) {
+-    auto def = a->get_defined_by();
+-    if (def == nullptr)
+-      return panic("tensor has no defining instruction.");
+-
+-    auto uses = a->get_used_by();
+-    if (uses.empty())
+-      return panic("tensor has no uses");
+-
+-    size_t first_def = 0;
+-    auto it = std::find(instructions.begin(), instructions.end(), def);
+-    if (it != instructions.end()) {
+-      first_def = std::distance(instructions.begin(), it);
+-    } else {
+-      return panic("instruction defining tensor not found in list.");
++  auto edges = build_interference_graph(ranges);
++  for (const auto &edge : edges) {
++    auto *a = edge.first;
++    auto *b = edge.second;
++    if (components[a] == components[b]) continue;
++    auto inplace_at_last_use = [&](Tensor *out, Tensor *input) {
++      auto *def = out->get_defined_by();
++      if (!def || ranges[input].second != ranges[out].first) return false;
++      auto outputs = def->get_outputs();
++      auto inputs = def->get_rhs();
++      for (size_t o = 0; o < outputs.size(); ++o)
++        for (size_t i = 0; i < inputs.size(); ++i)
++          if (outputs[o] == out && inputs[i] == input && def->allows_inplace(o, i)) return true;
++      return false;
++    };
++    if (inplace_at_last_use(a, b) || inplace_at_last_use(b, a)) continue;
++    auto offsets_a = a->get_offsets(), offsets_b = b->get_offsets();
++    auto sizes_a = a->get_sizes(), sizes_b = b->get_sizes();
++    // Rectangles are disjoint when ANY addressing dimension separates them.
++    std::vector<IntVar *> disjoint;
++    for (size_t dim = 0; dim < offsets_a.size(); ++dim) {
++      disjoint.push_back(solver.MakeIsLessOrEqualVar(MAKE_SUM(offsets_a[dim], sizes_a[dim]), offsets_b[dim]));
++      disjoint.push_back(solver.MakeIsLessOrEqualVar(MAKE_SUM(offsets_b[dim], sizes_b[dim]), offsets_a[dim]));
+     }
+-
+-    size_t last_use = first_def;
+-    for (const auto &instr : uses) {
+-      auto it = std::find(instructions.begin(), instructions.end(), instr);
+-      if (it != instructions.end()) {
+-        size_t index = std::distance(instructions.begin(), it);
+-        if (index > last_use) {
+-          last_use = index;
+-        }
+-      } else {
+-        return panic("instruction using tensor not found in list.");
+-      }
+-    }
+-
+-    return {first_def + 1, last_use + 1};
+-  }
+-
+-  // If OUTPUT, then live range is [N, N]
+-  if (a->type == Tensor::node_type::OUTPUT) {
+-    return {instructions.size(), instructions.size()};
++    solver.AddConstraint(solver.MakeGreaterOrEqual(solver.MakeSum(disjoint), int64_t(1)));
++    new_vars.insert(new_vars.end(), disjoint.begin(), disjoint.end());
+   }
+-
+-  return panic("unknown tensor type.");
+ }
+ 
+-InterferenceGraph build_interference_graph(
+-    const std::unordered_map<Tensor *, LiveRange> &live_ranges) {
+-  std::vector<std::pair<Tensor *, Tensor *>> interference_graph;
+-
+-  for (auto it1 = live_ranges.begin(); it1 != live_ranges.end(); ++it1) {
+-    for (auto it2 = std::next(it1); it2 != live_ranges.end(); ++it2) {
+-      Tensor *t1 = it1->first;
+-      Tensor *t2 = it2->first;
+-
+-      // Check if they are on the same storage
+-      if (t1->get_storage() != t2->get_storage()) {
+-        continue;
+-      }
+-
+-      LiveRange lr1 = it1->second;
+-      LiveRange lr2 = it2->second;
+-
+-      // Check if live ranges overlap. Treat touching intervals as
+-      // non-overlapping (i.e. [a,b] and [b,c] do NOT interfere).
+-      if (!(lr1.second <= lr2.first || lr2.second <= lr1.first)) {
+-        // Check if they are allowed to overlap
+-        Instruction *def1 = t1->get_defined_by();
+-        Instruction *def2 = t2->get_defined_by();
+-        if (def1 != nullptr && def2 != nullptr) {
+-          auto rhs1 = def1->get_rhs();
+-          auto rhs2 = def2->get_rhs();
+-          auto inplace1 = def1->get_rhs_inplace();
+-          auto inplace2 = def2->get_rhs_inplace();
++} // namespace constraint
+ 
+-          bool allowed_to_overlap = false;
+-          for (size_t i = 0; i < rhs1.size(); ++i) {
+-            if (inplace1[i] && rhs1[i] == t2) {
+-              allowed_to_overlap = true;
+-              break;
+-            }
+-          }
+-          for (size_t i = 0; i < rhs2.size(); ++i) {
+-            if (inplace2[i] && rhs2[i] == t1) {
+-              allowed_to_overlap = true;
+-              break;
+-            }
+-          }
+-          if (allowed_to_overlap) {
+-            continue;
+-          }
+-        }
++LiveRange compute_live_range(Tensor *tensor, const std::vector<Instruction *> &instructions) {
++  auto position = [&](Instruction *instruction) -> size_t {
++    auto found = std::find(instructions.begin(), instructions.end(), instruction);
++    if (found == instructions.end()) throw std::runtime_error("Use/definition missing from schedule");
++    return std::distance(instructions.begin(), found) + 1;
++  };
++  size_t first = tensor->get_defined_by() ? position(tensor->get_defined_by()) : 0;
++  size_t last = first;
++  for (auto *use : tensor->get_used_by()) last = std::max(last, position(use));
++  // Preserve inputs, and outputs from their actual definition to completion.
++  if (tensor->type == Tensor::INPUT || tensor->type == Tensor::OUTPUT) last = instructions.size() + 1;
++  // Even an unused result occupies space during its producer instruction.
++  return {first, last};
++}
+ 
+-        // Add edge to interference graph
+-        interference_graph.emplace_back(t1, t2);
+-      }
++InterferenceGraph build_interference_graph(const std::unordered_map<Tensor *, LiveRange> &ranges) {
++  InterferenceGraph edges;
++  for (auto a = ranges.begin(); a != ranges.end(); ++a)
++    for (auto b = std::next(a); b != ranges.end(); ++b) {
++      if (a->first->get_storage() != b->first->get_storage()) continue;
++      // Touching live intervals interfere unless explicitly declared in-place.
++      if (a->second.first <= b->second.second && b->second.first <= a->second.second)
++        edges.emplace_back(a->first, b->first);
+     }
+-  }
+-
+-  return interference_graph;
++  return edges;
+ }
+diff --git a/act_backend/generic/cpp/malloc/src/emitter.cc b/act_backend/generic/cpp/malloc/src/emitter.cc
+index 75fe08e6917f0ac0f30c79b57f68fe80b76966d8..47aa8b22c89e867239f1d52f422c0dd1d6d510fc 100644
+--- a/act_backend/generic/cpp/malloc/src/emitter.cc
++++ b/act_backend/generic/cpp/malloc/src/emitter.cc
+@@ -2,6 +2,35 @@
+ 
+ namespace emitter {
+ 
++// Trees describe logical grouping only. Leaves enumerate physical ABI slots
++// exactly once, in order; tuple containers (including []) allocate no buffer.
++static void validate_tree(const nlohmann::json &tree, size_t &next) {
++  if (tree.is_array()) {
++    for (const auto &child : tree) validate_tree(child, next);
++  } else if (tree.is_number_integer() && tree.get<int64>() >= 0
++             && tree.get<size_t>() == next) {
++    ++next;
++  } else {
++    throw std::runtime_error("Invalid logical value tree");
++  }
++}
++
++static int64 metadata_end(const MetaDataInfo &info) {
++  static const std::map<std::string, int64> sizes{{"jnp.uint8",1},{"jnp.int8",1},
++    {"jnp.bfloat16",2},{"jnp.float16",2},{"jnp.uint16",2},{"jnp.int16",2},
++    {"jnp.float32",4},{"jnp.uint32",4},{"jnp.int32",4},
++    {"jnp.float64",8},{"jnp.uint64",8},{"jnp.int64",8}};
++  __int128 bytes = sizes.at(info.dtype);
++  for (auto dim : info.shape) {
++    if (dim < 0) throw std::runtime_error("Negative metadata dimension");
++    bytes *= dim;
++    if (bytes > HBM_SIZE) throw std::runtime_error("Metadata exceeds HBM capacity");
++  }
++  if (info.addr < 0 || bytes + info.addr > HBM_SIZE)
++    throw std::runtime_error("Metadata exceeds HBM capacity");
++  return int64(bytes + info.addr);
++}
++
+ MetaDataInfo::MetaDataInfo(nlohmann::json &j) {
+   addr = 0;
+   if (j.contains("addr") && j["addr"].is_number_integer())
+@@ -34,6 +63,7 @@ std::string MetaDataInfo::str() const {
+     if (i != shape.size() - 1)
+       oss << ", ";
+   }
++  if (shape.size() == 1) oss << ",";
+   oss << "), 'dtype': " << dtype;
+   if (value != "")
+     oss << ", 'value': " << value;
+@@ -69,19 +99,30 @@ MetaData::MetaData(
+       throw std::runtime_error("input is required in metadata.json");
+ 
+     if (j.contains("output") && j["output"].is_array()) {
+-      if (j["output"].size() != 1)
+-        throw std::runtime_error("supports only one output in metadata.json");
+-
+       for (const auto &entry : j["output"]) {
+         output_info.emplace_back(
+             MetaDataInfo(const_cast<nlohmann::json &>(entry)));
+       }
+     } else
+       throw std::runtime_error("output is required in metadata.json");
++    for (auto entry : {std::make_pair("input_tree", input_info.size()),
++                       std::make_pair("output_tree", output_info.size())}) {
++      if (j.contains(entry.first)) {
++        size_t next = 0;
++        validate_tree(j[entry.first], next);
++        if (next != entry.second) throw std::runtime_error("Logical tree/ABI leaf count mismatch");
++      }
++    }
++    input_tree = j.value("input_tree", nlohmann::json());
++    output_tree = j.value("output_tree", nlohmann::json());
++    if (!input_tree.is_null() && !input_tree.is_array())
++      throw std::runtime_error("input_tree must describe the parameter list");
++    if (output_info.empty() && output_tree.is_null())
++      throw std::runtime_error("Empty output requires a logical tuple tree");
+   } catch (const std::exception &e) {
+     std::cerr << "Warning: failed to parse metadata.json: " << e.what()
+               << std::endl;
+-    assert(false && "nlohmann json parse error");
++    throw;
+   }
+ 
+   for (const auto &pair : tensor_map) {
+@@ -106,6 +147,9 @@ MetaData::MetaData(
+   }
+ 
+   this->max_hbm_size = 0;
++  // Unused inputs still belong to the callable ABI, even in an empty program.
++  for (const auto &info : input_info) max_hbm_size = std::max(max_hbm_size, metadata_end(info));
++  for (const auto &info : output_info) max_hbm_size = std::max(max_hbm_size, metadata_end(info));
+   for (const auto &pair : tensor_map) {
+     auto *tensor = pair.second;
+     if (tensor->get_storage()->get_name() == "HBM") {
+@@ -208,15 +252,24 @@ bool assembly_dump(char *outpath,
+   for (const auto &info : metadata.output_info) {
+     outfile << indent4 << info.str() << "," << std::endl;
+   }
+-  outfile << indent3 << "]" << std::endl;
++  outfile << indent3 << "]," << std::endl;
++  if (!metadata.input_tree.is_null())
++    outfile << indent3 << "input_tree=" << metadata.input_tree.dump() << "," << std::endl;
++  if (!metadata.output_tree.is_null())
++    outfile << indent3 << "output_tree=" << metadata.output_tree.dump() << "," << std::endl;
+ 
+   outfile << indent3 << ")" << std::endl;
+   outfile << indent1 << "def " << kernel_name << "_" << "():" << std::endl;
+ 
+   // Assembly code
++  bool emitted = false;
+   for (auto *instr : instructions) {
++    // Slice/Concat constrain storage placement but issue no hardware command.
++    if (instr->is_view()) continue;
+     outfile << indent2 << "api." << instr->str() << std::endl;
++    emitted = true;
+   }
++  if (!emitted) outfile << indent2 << "pass" << std::endl;
+ 
+   outfile << std::endl;
+   outfile << indent1 << "return " << kernel_name << "_" << std::endl;
+diff --git a/act_backend/generic/cpp/malloc/src/globals.cc b/act_backend/generic/cpp/malloc/src/globals.cc
+index 5b7d9a6193907af46c75d470af69bfad483d12cd..2b08c1776c111f00b5ddf0e340eb6646e5899d17 100644
+--- a/act_backend/generic/cpp/malloc/src/globals.cc
++++ b/act_backend/generic/cpp/malloc/src/globals.cc
+@@ -1,9 +1,25 @@
+ #include "solver.h"
+ #include "storage.h"
+ 
+-operations_research::Solver solver("sched_alloc");
++#include <memory>
+ 
+-std::map<std::string, Storage *> g_storage = {
+-    {"HBM", new Storage("HBM", {HBM_SIZE}, 0)},
++static std::unique_ptr<operations_research::Solver> current_solver;
++operations_research::Solver &allocation_solver() { return *current_solver; }
++
++std::map<std::string, Storage *> g_storage;
++
++void clear_allocation() {
++  for (auto &item : g_storage) delete item.second;
++  g_storage.clear();
++  current_solver.reset();
++}
++
++void initialize_allocation() {
++  clear_allocation();
++  current_solver = std::make_unique<operations_research::Solver>("sched_alloc");
++
++  g_storage = {
++    {"HBM", new Storage("HBM", {HBM_SIZE}, {}, "u8")},
+ {{GLOBALS_DATA_MODELS}}
+-};
++  };
++}
+diff --git a/act_backend/generic/cpp/malloc/src/parser.cc b/act_backend/generic/cpp/malloc/src/parser.cc
+index 4886c95b82f3c402c333a6a302b8d600439ec5f7..c3ca6fa3a5a922582bb06e90ecd6ac22c863e515 100644
+--- a/act_backend/generic/cpp/malloc/src/parser.cc
++++ b/act_backend/generic/cpp/malloc/src/parser.cc
+@@ -10,9 +10,7 @@ ParsedLine parse_line(const std::string &line) {
+   auto panic = [&](const std::string &msg) -> ParsedLine {
+     std::cerr << "parse_line error: " << msg << "\n  line: `" << line << "`"
+               << std::endl;
+-    assert(false && "unreachable");
+-    ParsedLine pl;
+-    return pl;
++    throw std::runtime_error(msg);
+   };
+   // (ii) trim whitespace from both ends of a string
+   auto trim = [](std::string &s) {
+@@ -20,6 +18,29 @@ ParsedLine parse_line(const std::string &line) {
+     s.erase(s.find_last_not_of(" \t\r\n") + 1);
+   };
+ 
++  // Multi-result PII uses (result0; result1; ...) followed by one operation.
++  // Reuse scalar descriptor parsing, preserving one Instruction instance.
++  std::string text = line;
++  trim(text);
++  if (!text.empty() && text.front() == '(') {
++    auto close = text.find(')');
++    if (close == std::string::npos) return panic("Unclosed result list");
++    auto operation = text.substr(close + 1);
++    trim(operation);
++    std::stringstream descriptors(text.substr(1, close - 1));
++    std::string descriptor;
++    std::vector<ParsedLine> results;
++    while (std::getline(descriptors, descriptor, ';')) {
++      trim(descriptor);
++      if (descriptor.empty()) return panic("Empty result descriptor");
++      results.push_back(parse_line(descriptor + " " + operation));
++    }
++    if (results.size() < 2) return panic("Expected multiple result descriptors");
++    pl = results.front();
++    pl.additional_results.assign(results.begin() + 1, results.end());
++    return pl;
++  }
++
+   // parse line: lhs: rest
+   // find first ':'
+   auto colon_pos = line.find(':');
+@@ -87,7 +108,7 @@ ParsedLine parse_line(const std::string &line) {
+       e_brkt < s_brkt)
+     return panic("missing '[' or ']' for type shape");
+ 
+-  // std::string dtype = type_shape.substr(0, s_brkt); // Not needed
++  pl.lhs_dtype = type_shape.substr(0, s_brkt);
+   std::string shape_str = type_shape.substr(s_brkt + 1, e_brkt - s_brkt - 1);
+   // trim(dtype); // Not needed
+   trim(shape_str);
+@@ -169,8 +190,7 @@ create_instruction(const ParsedLine &pl,
+   // (i) panic with error message
+   auto panic = [&](const std::string &msg) -> Instruction * {
+     std::cerr << "create_instruction error: " << msg << std::endl;
+-    assert(false && "unreachable");
+-    return nullptr;
++    throw std::runtime_error(msg);
+   };
+ 
+   const std::string &lhs = pl.lhs_variable_name;
+@@ -181,6 +201,27 @@ create_instruction(const ParsedLine &pl,
+   const std::string &attr_str = pl.op_attr;
+   const std::vector<std::string> &operands_names = pl.operand_names;
+ 
++  // Every result has its own tensor, placement variables and use list.
++  std::vector<Tensor *> lhs_tensors;
++  std::vector<ParsedLine> results{pl};
++  results.insert(results.end(), pl.additional_results.begin(), pl.additional_results.end());
++  for (const auto &result : results) {
++    if (tensor_map.count(result.lhs_variable_name)) return panic("Duplicate result name");
++    auto found = g_storage.find(result.lhs_storage_name);
++    if (found == g_storage.end()) return panic("Unknown result storage");
++    auto *tensor = new Tensor(result.lhs_variable_name, found->second,
++                              result.lhs_shape, result.lhs_dtype);
++    tensor_map[result.lhs_variable_name] = tensor;
++    lhs_tensors.push_back(tensor);
++    if (result.lhs_offset != -1) {
++      if (result.lhs_offset < 0 || result.lhs_storage_name != "HBM")
++        return panic("Only HBM supports nonnegative fixed offsets");
++      known_offsets[tensor] = result.lhs_offset;
++    }
++    tensor->type = Tensor::node_type::INTERMEDIATE;
++  }
++  auto *lhs_tensor = lhs_tensors.front();
++
+   // Find storage pointer
+   Storage *storage = nullptr;
+   if (g_storage.find(storage_name) != g_storage.end())
+@@ -189,10 +230,6 @@ create_instruction(const ParsedLine &pl,
+     return panic("unknown storage: " + storage_name);
+ 
+   // Create Tensor object for lhs variable
+-  Tensor *lhs_tensor = new Tensor(lhs, storage, shape_vec);
+-
+-  // insert into tensor_map
+-  tensor_map[lhs] = lhs_tensor;
+ 
+   // if offset is known, insert into known_offsets
+   if (offset != -1) {
+@@ -204,11 +241,13 @@ create_instruction(const ParsedLine &pl,
+ 
+   // Handle Var and DCC as declarations with no instruction
+   if (op_name.rfind("Var", 0) == 0) {
++    if (lhs_tensors.size() != 1 || !operands_names.empty()) return panic("Invalid input declaration");
+     lhs_tensor->type = Tensor::node_type::INPUT;
+     // variable declaration -- no instruction created
+     return nullptr;
+   }
+   if (op_name.rfind("DCC", 0) == 0) {
++    if (lhs_tensors.size() != 1 || !operands_names.empty()) return panic("Invalid constant declaration");
+     lhs_tensor->type = Tensor::node_type::CONSTANT;
+     // store constant value
+     known_constants[lhs_tensor] = attr_str;
+@@ -224,10 +263,15 @@ create_instruction(const ParsedLine &pl,
+       return panic("unknown operand: " + operand);
+     }
+     rhs_tensors.push_back(tensor_map[operand]);
++    if (std::find(lhs_tensors.begin(), lhs_tensors.end(), rhs_tensors.back()) != lhs_tensors.end())
++      return panic("Instruction depends on its own result");
+   }
+ 
+   // Create instruction object based on op_name
+   if (op_name == "slice") {
++    if (lhs_tensors.size() != 1) return panic("Slice needs one result");
++    if (rhs_tensors.size() != 1 || rhs_tensors[0]->get_storage() != lhs_tensor->get_storage())
++      return panic("Invalid slice inputs");
+     // currently only implemented for one attribute: slices
+     std::vector<std::pair<int64, int64>> slices;
+     auto start = attr_str.find("'");
+@@ -257,9 +301,21 @@ create_instruction(const ParsedLine &pl,
+       return panic("missing slices attribute");
+     }
+ 
++    auto input_sizes = rhs_tensors[0]->get_sizes();
++    auto output_sizes = lhs_tensor->get_sizes();
++    if (slices.size() != input_sizes.size()) return panic("Slice rank mismatch");
++    for (size_t dim = 0; dim < slices.size(); ++dim)
++      if (slices[dim].first < 0 || slices[dim].second > input_sizes[dim]
++          || slices[dim].first >= slices[dim].second
++          || output_sizes[dim] != slices[dim].second - slices[dim].first)
++        return panic("Invalid slice range");
+     return new Slice(lhs_tensor, rhs_tensors, slices);
+   }
+   else if (op_name == "concat") {
++    if (lhs_tensors.size() != 1) return panic("Concat view needs one result");
++    if (rhs_tensors.size() != 2 || rhs_tensors[0]->get_storage() != lhs_tensor->get_storage()
++        || rhs_tensors[1]->get_storage() != lhs_tensor->get_storage())
++      return panic("Invalid concat inputs");
+     // currently only implemented for one attribute: dimension
+     int64 dimension = 0;
+     auto start = attr_str.find("'");
+@@ -275,6 +331,14 @@ create_instruction(const ParsedLine &pl,
+       return panic("missing dimension attribute");
+     }
+ 
++    auto output_sizes = lhs_tensor->get_sizes();
++    if (dimension < 0 || size_t(dimension) >= output_sizes.size()) return panic("Invalid concat dimension");
++    for (size_t dim = 0; dim < output_sizes.size(); ++dim) {
++      auto a = rhs_tensors[0]->get_sizes()[dim];
++      auto b = rhs_tensors[1]->get_sizes()[dim];
++      if (dim == size_t(dimension) ? output_sizes[dim] != a + b : (output_sizes[dim] != a || a != b))
++        return panic("Invalid concat shape");
++    }
+     return new Concat(lhs_tensor, rhs_tensors, dimension);
+   }
+ {{INSTRUCTION_CASES}}
+diff --git a/act_backend/generic/cpp/malloc/src/scheduler.cc b/act_backend/generic/cpp/malloc/src/scheduler.cc
+index d2a9061080d9367e43219aafcee509663f21e2a4..f7a2c83a6cc5ba8c2be19b1d0e425d5d60da1094 100644
+--- a/act_backend/generic/cpp/malloc/src/scheduler.cc
++++ b/act_backend/generic/cpp/malloc/src/scheduler.cc
+@@ -3,7 +3,7 @@
+ namespace scheduler {
+ 
+ std::vector<Instruction *>
+-topological(const std::vector<Instruction *> &instructions, Instruction *root,
++topological(const std::vector<Instruction *> &instructions, const std::vector<Instruction *> &roots,
+             const std::vector<std::string> &buffers) {
+   EsunCache esun_cache;
+ 
+@@ -20,7 +20,7 @@ topological(const std::vector<Instruction *> &instructions, Instruction *root,
+   for (auto *instr : instructions)
+     visited[instr] = false;
+ 
+-  dfs(root, visited, topological_order, cost_map);
++  for (auto *root : roots) dfs(root, visited, topological_order, cost_map);
+ 
+   return topological_order;
+ }
+@@ -44,8 +44,8 @@ int64 esun(Instruction *instr, const std::string &d, EsunCache &esun_cache) {
+     return esun_cache[instr][d];
+   }
+ 
+-  Tensor *y = instr->get_lhs();
+-  int64 mem_y = mem(y, d);
++  int64 mem_y = 0;
++  for (auto *result : instr->get_outputs()) mem_y += mem(result, d);
+ 
+   std::vector<Tensor *> xs = instr->get_rhs();
+   std::vector<int64> mem_xs;
+@@ -60,7 +60,7 @@ int64 esun(Instruction *instr, const std::string &d, EsunCache &esun_cache) {
+     mem_xs_sum += m;
+   }
+ 
+-  int64 tau_x_min = INT64_MAX;
++  int64 tau_x_min = rhs_instrs.empty() ? 0 : INT64_MAX;
+   for (int i = 0; i < rhs_instrs.size(); ++i) {
+     int esun_x_i;
+     if (rhs_instrs[i]) {
+@@ -112,7 +112,8 @@ void dfs(Instruction *instr, std::unordered_map<Instruction *, bool> &visited,
+   // descending order of cost
+   std::sort(next_candidates.begin(), next_candidates.end(),
+             [&](Instruction *a, Instruction *b) {
+-              return cost_map.at(a) > cost_map.at(b);
++              if (cost_map.at(a) != cost_map.at(b)) return cost_map.at(a) > cost_map.at(b);
++              return a->get_outputs()[0]->get_name() < b->get_outputs()[0]->get_name();
+             });
+ 
+   for (auto *next : next_candidates) {
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+index 86e93f5ccca864501d790278d1dd1ee7d97982a3..92fc6e8283c0880d3b56109594e0e9782dd3769b 100644
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -56,20 +56,17 @@ fn allocate_pii(
+     asm_path: &PathBuf,
+ ) {
+     pii.save(pii_path);
+-    if pii.requires_multi_result_allocation() {
+-        eprintln!(
+-            concat!(
+-                "Multi-output PII extracted ({} outputs): {}. ",
+-                "Multi-output allocation/emission is not implemented yet; ",
+-                "no assembly was generated."
+-            ),
+-            pii.outputs.len(), pii_path.display()
+-        );
+-        process::exit(1);
+-    }
+     backend::malloc::cpp_bridge(pii_path, metadata_path, asm_path);
+ }
+ 
++fn publish_assembly(path: &PathBuf, output_path: &PathBuf) {
++    std::fs::copy(path, output_path).expect("Failed to publish assembly");
++    std::fs::copy(
++        format!("{}.allocation.json", path.display()),
++        format!("{}.allocation.json", output_path.display()),
++    ).expect("Failed to publish allocation evidence");
++}
++
+ fn check_termination(best: Option<AsmCandidate>, start: &Instant, output_path: &PathBuf) {
+     let current_time = start.elapsed();
+     match best {
+@@ -90,7 +87,7 @@ fn check_termination(best: Option<AsmCandidate>, start: &Instant, output_path: &
+                     path, cost, timestamp
+                 );
+ 
+-                std::fs::copy(&path, output_path).expect("Failed to copy best ASM to output path");
++                publish_assembly(&path, output_path);
+                 println!("Best ASM copied to output path: {}", output_path.display());
+ 
+                 process::exit(0);
+@@ -128,7 +125,7 @@ fn timeout(best: Option<AsmCandidate>, start: &Instant, output_path: &PathBuf) {
+                     path, cost, timestamp
+                 );
+ 
+-                std::fs::copy(&path, output_path).expect("Failed to copy best ASM to output path");
++                publish_assembly(&path, output_path);
+                 println!("Best ASM copied to output path: {}", output_path.display());
+             }
+             None => {
+@@ -305,6 +302,16 @@ fn main() {
+     let metadata_path = log_dir.join("metadata.json");
+     metadata.save(&metadata_path);
+ 
++    if outputs.is_empty() {
++        // No live tensor leaves: still go through the same PII/C++ emitter.
++        let pii = ir::pii::PiiGraph::default();
++        let asm = log_dir.join("0.py");
++        allocate_pii(&pii, &log_dir.join("0.pii"), &metadata_path, &asm);
++        if !asm.exists() { process::exit(1); }
++        publish_assembly(&asm, &output_path);
++        return;
++    }
++
+     // Multi-result semantics may match independent values even when the input
+     // HLO has no explicit tuple. Refresh logical links at every Runner boundary;
+     // generated IR-to-ISA rewrites still create all instruction candidates.
+diff --git a/act_backend/malloc_globals_cc_generator.py b/act_backend/malloc_globals_cc_generator.py
+index 4fca53e08a9d0d69b65eed80b34bcaa7e23cc52c..4761ec44297e700020b7ea4b8d2d7df6bdda5f7b 100644
+--- a/act_backend/malloc_globals_cc_generator.py
++++ b/act_backend/malloc_globals_cc_generator.py
+@@ -24,8 +24,9 @@ def generate_globals_models(data_models):
+             for dim in data_model.access_dim:
+                 access_dims += str(dim) + ","
+             access_dims = access_dims[:-1] + "}"
+-            num_unit = len(data_model.unit_dim)
+-            out_str = f'\t{{"{buffer_name}", new Storage("{buffer_name}", {access_dims}, {num_unit})}}'
++            unit = '{' + ','.join(str(d) for d in data_model.unit_dim) + '}'
++            dtype = data_model.var_type
++            out_str = f'\t{{"{buffer_name}", new Storage("{buffer_name}", {access_dims}, {unit}, "{dtype}")}}'
+             if (idx < len(data_models)):
+                 out_str += ','
+             models.append(out_str)
+diff --git a/act_backend/malloc_instructions_h_generator.py b/act_backend/malloc_instructions_h_generator.py
+index 6ae27ae5de25d6256de73e1d24d0f5b9c1dcaa39..2707813d6332a747fd74d310042c06b8da9098d4 100644
+--- a/act_backend/malloc_instructions_h_generator.py
++++ b/act_backend/malloc_instructions_h_generator.py
+@@ -94,8 +94,25 @@ def generate_instruction_class(instruction, templates):
+     if comp_attrs:
+         comp_attr_init = ", " + ", ".join(f"{attr}({attr})" for attr in comp_attrs)
+ 
+-    # No validations needed
+-    validations = ""
++    # Result ports precede input ports in get_h; never interpret output 1 as input 0.
++    validations = (f'    if (Y.size() != {len(instruction.instr_outputs)} || '
++                   f'X.size() != {len(instruction.instr_inputs)}) '
++                   'throw std::runtime_error("ISA/PII port count mismatch");\n')
++    for role, ports in (("Y", instruction.instr_outputs), ("X", instruction.instr_inputs)):
++        for index, (buffer, addresses, sizes) in enumerate(ports):
++            if len(addresses) != 1 or len(sizes) != 1:
++                raise ValueError("C++ ISA address generation currently requires one addressing dimension")
++            if not re.fullmatch(r'@a\.\w+', str(addresses[0])):
++                raise ValueError("C++ ISA address must be a declared address parameter")
++            buf = "HBM" if buffer == "d0" else buffer.upper()
++            validations += (f'    if ({role}[{index}]->get_storage()->get_name() != "{buf}") '
++                            'throw std::runtime_error("ISA/PII buffer mismatch");\n')
++    inplace_pairs = " || ".join(
++        f"(output == {o} && input == {i})"
++        for o, out in enumerate(instruction.instr_outputs)
++        for i, inp in enumerate(instruction.instr_inputs)
++        if out == inp
++    ) or "false"
+     str_bound_checks = ""
+ 
+     str_format = ""
+@@ -125,7 +142,8 @@ def generate_instruction_class(instruction, templates):
+                             STR_FORMAT=str_format,
+                             GET_H_CASES=get_h_cases,
+                             ADDRESS_CONSTRAINTS=generate_constraints(instruction),
+-                            GET_INT_VAR_LIST=get_int_var_list)
++                            GET_INT_VAR_LIST=get_int_var_list,
++                            INPLACE_PAIRS=inplace_pairs)
+ 
+ 
+ def generate_instructions_file(backend_gen_dir, instructions, data_models):
+diff --git a/act_backend/malloc_parser_cc_generator.py b/act_backend/malloc_parser_cc_generator.py
+index 85ebc893c7f7a41977b647625e436b16fa10e92f..da39354501d702f8675efa63bcb200c6996085cf 100644
+--- a/act_backend/malloc_parser_cc_generator.py
++++ b/act_backend/malloc_parser_cc_generator.py
+@@ -12,12 +12,14 @@ def generate_parser_instruction(instruction, templates):
+     comp_attrs = instruction.comp_attr
+ 
+     if comp_attrs:
+-        # Currently assuming single attribute
+-        attr_name = comp_attrs[0]
+-        return templates.render("parser.cc.INSTRUCTION_CASES.case_with_attr.txt",
++        # PII data is an ordered comma-separated integer list. Its order is
++        # exactly the computation-attribute order declared in TAIDL.
++        arguments = ", ".join(f"attributes[{i}]" for i in range(len(comp_attrs)))
++        return "\n" + templates.render("parser.cc.INSTRUCTION_CASES.case_with_attr.txt",
+             op_name=op_name,
+             ClassName=class_name,
+-            attr_name=attr_name
++            attr_count=len(comp_attrs),
++            arguments=arguments
+         )
+     else:
+         return templates.render("parser.cc.INSTRUCTION_CASES.case_no_attr.txt",
+diff --git a/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt b/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt
+index cee9642f5573401db46a074cf2c9df2073a3fc6e..ee37e79f6c72981a8c9b2331c2ef69050036a159 100644
+--- a/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt
++++ b/act_backend/templates/instructions.h.INSTRUCTION_CLASSES.class.txt
+@@ -4,8 +4,8 @@ private:
+ {{COMP_ATTR_MEMBERS}}{{ADDR_VAR_MEMBERS}}
+ {{GET_H_METHODS}}
+ public:
+-  {{CLASS_NAME}}(Tensor *y, std::vector<Tensor *> X{{COMP_ATTR_PARAMS}})
+-      : Instruction("{{OP_NAME}}", y, X){{COMP_ATTR_INIT}} {
++  {{CLASS_NAME}}(std::vector<Tensor *> Y, std::vector<Tensor *> X{{COMP_ATTR_PARAMS}})
++      : Instruction("{{OP_NAME}}", Y, X){{COMP_ATTR_INIT}} {
+ {{CONSTRUCTOR_VALIDATIONS}}  }
+ 
+   std::string str() override {
+@@ -25,5 +25,9 @@ public:
+     return constraints;
+   }
+ 
++  bool allows_inplace(size_t output, size_t input) const override {
++    return {{INPLACE_PAIRS}};
++  }
++
+   std::vector<IntVar *> get_int_var() override { return {{{GET_INT_VAR_LIST}}}; }
+ };
+diff --git a/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_no_attr.txt b/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_no_attr.txt
+index 816cc07630e53ecc73f38b94e370f143c0fd95dc..358d0ce1196682039f4cebaecf4392f130d037ab 100644
+--- a/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_no_attr.txt
++++ b/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_no_attr.txt
+@@ -1,5 +1,5 @@
+   else if (op_name == "{{op_name}}") {
+     // does not have any attributes
+ 
+-    return new {{ClassName}}(lhs_tensor, rhs_tensors);
++    return new {{ClassName}}(lhs_tensors, rhs_tensors);
+   }
+diff --git a/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_with_attr.txt b/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_with_attr.txt
+index 7b7f96a131052b7e5eb0941f40b96b88eca969f9..37a9f0886c5bf84bf0d1a612bbc59dbbdbdb4ae4 100644
+--- a/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_with_attr.txt
++++ b/act_backend/templates/parser.cc.INSTRUCTION_CASES.case_with_attr.txt
+@@ -1,18 +1,20 @@
+   else if (op_name == "{{op_name}}") {
+-    // currently only implemented for one attribute: {{attr_name}}
+-    int64 {{attr_name}} = 0;
+     auto start = attr_str.find("'");
+     auto end = attr_str.rfind("'");
+-    if (start != std::string::npos && end != std::string::npos && end > start) {
+-      std::string {{attr_name}}_str = attr_str.substr(start + 1, end - start - 1);
++    if (start == std::string::npos || end <= start)
++      return panic("missing computation attributes for {{op_name}}");
++    std::istringstream stream(attr_str.substr(start + 1, end - start - 1));
++    std::vector<int64> attributes;
++    std::string token;
++    while (std::getline(stream, token, ',')) {
+       try {
+-        {{attr_name}} = std::stoll({{attr_name}}_str);
+-      } catch (...) {
+-        return panic("failed to parse {{attr_name}} attribute as integer");
+-      }
+-    } else {
+-      return panic("missing {{attr_name}} attribute");
++        size_t used = 0;
++        auto value = std::stoll(token, &used);
++        if (used != token.size()) return panic("invalid computation attribute");
++        attributes.push_back(value);
++      } catch (...) { return panic("invalid computation attribute"); }
+     }
+-
+-    return new {{ClassName}}(lhs_tensor, rhs_tensors, {{attr_name}});
++    if (attributes.size() != {{attr_count}})
++      return panic("computation attribute count mismatch for {{op_name}}");
++    return new {{ClassName}}(lhs_tensors, rhs_tensors, {{arguments}});
+   }

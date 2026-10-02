@@ -1,0 +1,1584 @@
+diff --git a/act_backend/generator.py b/act_backend/generator.py
+index 1944afab95d0c78a5f1ec41dbd5c5b6906196e51..765e83a84cfef4ce546551fb93ce75ae1c549488 100644
+--- a/act_backend/generator.py
++++ b/act_backend/generator.py
+@@ -13,6 +13,7 @@ import subprocess
+ from dataclasses import dataclass
+ 
+ from taidl import Accelerator
++from taidl.semantics import semantic_interface
+ 
+ from .ir_buffer_rs_generator import generate_buffer_rs_file
+ from .ir_egraph_rs_generator import generate_egraph_rs_file
+@@ -31,6 +32,7 @@ class InstructionMetadata:
+     semantics_ast: object
+     has_comp_attrs: bool
+     rhs_size: int
++    comp_attrs: tuple = ()
+ 
+ 
+ def _get_instruction_metadata(accelerator: Accelerator) -> List[InstructionMetadata]:
+@@ -38,11 +40,15 @@ def _get_instruction_metadata(accelerator: Accelerator) -> List[InstructionMetad
+     metadata_list = []
+     for instruction in accelerator.instructions:
+         if instruction.instr_semantics_ast:
++            semantic_interface(instruction.instr_semantics_ast,
++                               input_count=len(instruction.instr_inputs),
++                               output_count=len(instruction.instr_outputs))
+             metadata = InstructionMetadata(
+                 name=instruction.instruction,
+                 semantics_ast=instruction.instr_semantics_ast,
+                 has_comp_attrs=len(instruction.comp_attr) > 0,
+-                rhs_size=len(instruction.instr_inputs) + 1
++                rhs_size=len(instruction.instr_inputs) + 1,
++                comp_attrs=tuple(instruction.comp_attr),
+             )
+             metadata_list.append(metadata)
+     return metadata_list
+diff --git a/act_backend/generic/src/ir/egraph.rs b/act_backend/generic/src/ir/egraph.rs
+index ad25224cc268d2a4f27a47050a94265ff6031658..159ee0e2cff8bb8dd42e193500660363d955479a 100644
+--- a/act_backend/generic/src/ir/egraph.rs
++++ b/act_backend/generic/src/ir/egraph.rs
+@@ -15,6 +15,7 @@ pub enum TensorOp {
+     OpConvert(String, [Id; 1]),
+     OpCopy([Id; 1]),
+     OpDivide([Id; 2]),
++    OpMultiply([Id; 2]),
+     OpDot([Id; 2]),
+     OpExp([Id; 1]),
+     OpEye(String),
+@@ -24,6 +25,8 @@ pub enum TensorOp {
+     OpShiftLeft([Id; 2]),
+     OpShiftRightLogical([Id; 2]),
+     OpSlice(String, [Id; 1]),
++    OpTuple(Vec<Id>),
++    OpGetTupleElement(usize, [Id; 1]),
+     OpXor([Id; 2]),
+     OpTranspose(String, [Id; 1]),
+     // other
+@@ -43,6 +46,7 @@ impl TensorOp {
+             TensorOp::OpConvert(..) => 1,
+             TensorOp::OpCopy(..) => 1,
+             TensorOp::OpDivide(..) => 2,
++            TensorOp::OpMultiply(..) => 2,
+             TensorOp::OpDot(..) => 2,
+             TensorOp::OpExp(..) => 1,
+             TensorOp::OpEye(..) => 0,
+@@ -52,6 +56,8 @@ impl TensorOp {
+             TensorOp::OpShiftLeft(..) => 2,
+             TensorOp::OpShiftRightLogical(..) => 2,
+             TensorOp::OpSlice(..) => 1,
++            TensorOp::OpTuple(ids) => ids.len(),
++            TensorOp::OpGetTupleElement(..) => 1,
+             TensorOp::OpXor(..) => 2,
+             TensorOp::OpTranspose(..) => 1,
+             TensorOp::DetectedConst(..) => 0,
+@@ -96,10 +102,12 @@ impl Language for TensorOp {
+         std::mem::discriminant(self)
+     }
+ 
+-    // All variants have a fixed number of children, so if self and other are the same variant,
+-    // then they must have the same arity.
+     fn matches(&self, other: &Self) -> bool {
++        if let (Self::OpGetTupleElement(a, _), Self::OpGetTupleElement(b, _)) = (self, other) {
++            return a == b;
++        }
+         std::mem::discriminant(self) == std::mem::discriminant(other)
++            && self.num_children() == other.num_children()
+     }
+ 
+     fn children(&self) -> &[Id] {
+@@ -113,6 +121,7 @@ impl Language for TensorOp {
+             TensorOp::OpConvert(_, ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpCopy(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpDivide(ids) => LanguageChildren::as_slice(ids),
++            TensorOp::OpMultiply(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpDot(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpExp(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpEye(_) => &[],
+@@ -122,6 +131,8 @@ impl Language for TensorOp {
+             TensorOp::OpShiftLeft(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpShiftRightLogical(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpSlice(_, ids) => LanguageChildren::as_slice(ids),
++            TensorOp::OpTuple(ids) => ids.as_slice(),
++            TensorOp::OpGetTupleElement(_, ids) => ids.as_slice(),
+             TensorOp::OpXor(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpTranspose(_, ids) => LanguageChildren::as_slice(ids),
+             TensorOp::DetectedConst(_) => &[],
+@@ -140,6 +151,7 @@ impl Language for TensorOp {
+             TensorOp::OpConvert(_, ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpCopy(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpDivide(ids) => LanguageChildren::as_mut_slice(ids),
++            TensorOp::OpMultiply(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpDot(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpExp(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpEye(_) => &mut [],
+@@ -149,6 +161,8 @@ impl Language for TensorOp {
+             TensorOp::OpShiftLeft(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpShiftRightLogical(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpSlice(_, ids) => LanguageChildren::as_mut_slice(ids),
++            TensorOp::OpTuple(ids) => ids.as_mut_slice(),
++            TensorOp::OpGetTupleElement(_, ids) => ids.as_mut_slice(),
+             TensorOp::OpXor(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpTranspose(_, ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::DetectedConst(_) => &mut [],
+@@ -211,6 +225,9 @@ impl FromOp for TensorOp {
+                 let children = <[Id; 2] as LanguageChildren>::from_vec(children);
+                 Ok(TensorOp::OpDivide(children))
+             }
++            "multiply" if children.len() == 2 => {
++                Ok(TensorOp::OpMultiply(children.try_into().unwrap()))
++            }
+             op if op == "dot" && <[Id; 2] as LanguageChildren>::can_be_length(children.len()) => {
+                 let children = <[Id; 2] as LanguageChildren>::from_vec(children);
+                 Ok(TensorOp::OpDot(children))
+@@ -264,6 +281,12 @@ impl FromOp for TensorOp {
+                 let children = <[Id; 1] as LanguageChildren>::from_vec(children);
+                 Ok(TensorOp::OpSlice(data.to_string(), children))
+             }
++            "tuple" => Ok(TensorOp::OpTuple(children)),
++            op if op.starts_with("gte_") && children.len() == 1 => {
++                let index = op[4..].parse::<usize>()
++                    .map_err(|_| FromOpError::new(op, children.clone()))?;
++                Ok(TensorOp::OpGetTupleElement(index, [children[0]]))
++            }
+             op if op == "xor" && <[Id; 2] as LanguageChildren>::can_be_length(children.len()) => {
+                 let children = <[Id; 2] as LanguageChildren>::from_vec(children);
+                 Ok(TensorOp::OpXor(children))
+@@ -293,6 +316,7 @@ impl std::fmt::Display for TensorOp {
+             TensorOp::OpConvert(data, _) => write!(f, "convert[dtype='{}']", data),
+             TensorOp::OpCopy(_) => write!(f, "copy"),
+             TensorOp::OpDivide(_) => write!(f, "divide"),
++            TensorOp::OpMultiply(_) => write!(f, "multiply"),
+             TensorOp::OpDot(_) => write!(f, "dot"),
+             TensorOp::OpExp(_) => write!(f, "exponential"),
+             TensorOp::OpEye(data) => write!(f, "eye[ttype='{}']", data),
+@@ -302,6 +326,8 @@ impl std::fmt::Display for TensorOp {
+             TensorOp::OpShiftLeft(_) => write!(f, "shift_left"),
+             TensorOp::OpShiftRightLogical(_) => write!(f, "shift_right_logical"),
+             TensorOp::OpSlice(data, _) => write!(f, "slice[slice='{}']", data), // e.g., "4:4" for 1D slice, "1:3;4:6" for 2D slice
++            TensorOp::OpTuple(_) => write!(f, "tuple"),
++            TensorOp::OpGetTupleElement(index, _) => write!(f, "gte_{}", index),
+             TensorOp::OpXor(_) => write!(f, "xor"),
+             TensorOp::OpTranspose(data, _) => write!(f, "transpose[perm='{}']", data),
+             TensorOp::DetectedConst(id) => write!(f, "DCC[{}]", id),
+@@ -311,6 +337,35 @@ impl std::fmt::Display for TensorOp {
+ }
+ 
+ // E-class metadata
++/// Tuple structure is derived from ordered children (possibly other tuples), not the
++/// legacy tensor-only analysis slot on the aggregate e-class. Rewriting retains
++/// the OpTuple alternative even when a tuple-producing ISA candidate is added.
++pub fn tuple_elements(
++    egraph: &EGraph<TensorOp, TensorInfo>,
++    id: Id,
++) -> Option<Vec<Id>> {
++    fn resolve(
++        graph: &EGraph<TensorOp, TensorInfo>, id: Id, path: &mut std::collections::HashSet<Id>,
++    ) -> Option<Vec<Id>> {
++        let id = graph.find(id);
++        if !path.insert(id) { return None; }
++        let direct = graph[id].nodes.iter().find_map(|en| match en {
++            TensorOp::OpTuple(children) => Some(children.iter().map(|&id| graph.find(id)).collect()),
++            _ => None,
++        });
++        let result = direct.or_else(|| graph[id].nodes.iter().find_map(|en| {
++            if let TensorOp::OpGetTupleElement(index, [source]) = en {
++                let elements = resolve(graph, *source, path)?;
++                return resolve(graph, *elements.get(*index)?, path);
++            }
++            None
++        }));
++        path.remove(&id);
++        result
++    }
++    resolve(egraph, id, &mut std::collections::HashSet::new())
++}
++
+ #[derive(Debug, Clone)]
+ pub struct TensorInfo {
+     pub shape: Vec<i32>,
+diff --git a/act_backend/generic/src/isel/initializer/lib.rs b/act_backend/generic/src/isel/initializer/lib.rs
+index b830e98f7c92f9cdfb0d56f467d9840da4ac51e4..9cef9d14f70a4033a64be9260922cefc05851558 100644
+--- a/act_backend/generic/src/isel/initializer/lib.rs
++++ b/act_backend/generic/src/isel/initializer/lib.rs
+@@ -192,8 +192,9 @@ fn add_expr_to_egraph(
+             tshape,
+             ttile,
+             source,
++            dimensions,
+         } => {
+-            add_broadcast(tsymbol, ttype, tshape, source, egraph, table);
++            add_broadcast(tsymbol, ttype, tshape, source, dimensions, egraph, table);
+             if parsing_root {
+                 add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+             }
+@@ -343,7 +344,10 @@ pub fn add_parameter(
+ 
+         let mut shape_with_size = tshape.to_string();
+         if dtype_size != 1 {
+-            shape_with_size += &format!(",{}", dtype_size);
++            if !shape_with_size.is_empty() {
++                shape_with_size.push(',');
++            }
++            shape_with_size.push_str(&dtype_size.to_string());
+         }
+ 
+         let node = egraph.add(TensorOp::OpReshape(shape_with_size.clone(), [var_node]));
+@@ -386,7 +390,10 @@ pub fn add_parameter(
+ 
+         let mut shape_with_size = tiled_shape.to_string();
+         if dtype_size != 1 {
+-            shape_with_size += &format!(",{}", dtype_size);
++            if !shape_with_size.is_empty() {
++                shape_with_size.push(',');
++            }
++            shape_with_size.push_str(&dtype_size.to_string());
+         }
+ 
+         let node = egraph.add(TensorOp::OpReshape(shape_with_size.clone(), [var_node]));
+@@ -424,7 +431,10 @@ pub fn add_parameter(
+ 
+         let mut shape_with_size = tshape.to_string();
+         if dtype_size != 1 {
+-            shape_with_size += &format!(",{}", dtype_size);
++            if !shape_with_size.is_empty() {
++                shape_with_size.push(',');
++            }
++            shape_with_size.push_str(&dtype_size.to_string());
+         }
+ 
+         let node = egraph.add(TensorOp::OpReshape(shape_with_size.clone(), [node]));
+@@ -474,6 +484,7 @@ fn add_broadcast(
+     ttype: &str,
+     tshape: &str,
+     source: &str,
++    dimensions: &str,
+     egraph: &mut EGraph<TensorOp, TensorInfo>,
+     table: &mut EggSymbolTable,
+ ) {
+@@ -481,7 +492,7 @@ fn add_broadcast(
+     let shape = shape_to_vec(tshape);
+ 
+     let node = egraph.add(TensorOp::OpBroadcast(
+-        tshape.to_string(),
++        dimensions.to_string(),
+         [*table.get(source).unwrap()],
+     ));
+ 
+@@ -517,7 +528,8 @@ fn add_binary_op(
+         "or" => TensorOp::OpOr,
+         "shift-left" => TensorOp::OpShiftLeft,
+         "dot" => TensorOp::OpDot,
+-        "divide" => TensorOp::OpDivide
++        "divide" => TensorOp::OpDivide,
++        "multiply" => TensorOp::OpMultiply
+     });
+ 
+     egraph.set_analysis_data(
+@@ -770,7 +782,10 @@ fn add_root_operations(
+     if ttile == "" {
+         let mut shape_with_size = tshape.to_string();
+         if dtype_size != 1 {
+-            shape_with_size += &format!(",{}", dtype_size);
++            if !shape_with_size.is_empty() {
++                shape_with_size.push(',');
++            }
++            shape_with_size.push_str(&dtype_size.to_string());
+         }
+ 
+         let node = table.get(tsymbol);
+@@ -828,7 +843,10 @@ fn add_root_operations(
+ 
+         let mut shape_with_size = transposed_reshape_str.to_string();
+         if dtype_size != 1 {
+-            shape_with_size += &format!(",{}", dtype_size);
++            if !shape_with_size.is_empty() {
++                shape_with_size.push(',');
++            }
++            shape_with_size.push_str(&dtype_size.to_string());
+         }
+ 
+         let node = egraph.add(TensorOp::OpBitcvt([node]));
+@@ -861,13 +879,13 @@ fn shape_to_vec(shape_str: &str) -> Vec<i32> {
+     let cleaned = shape_str.trim();
+ 
+     if cleaned.is_empty() || cleaned == "[]" {
+-        return vec![1];
++        return vec![];
+     }
+ 
+     let trimmed = cleaned.trim_matches(|c| c == '[' || c == ']');
+ 
+     if trimmed.trim().is_empty() {
+-        return vec![1];
++        return vec![];
+     }
+ 
+     trimmed
+diff --git a/act_backend/generic/src/isel/initializer/parser.rs b/act_backend/generic/src/isel/initializer/parser.rs
+index cb3c62f2a94e28dad3ad43809e567c035f825b31..36e7237135f817ee3d85bd553f13f429774f1886 100644
+--- a/act_backend/generic/src/isel/initializer/parser.rs
++++ b/act_backend/generic/src/isel/initializer/parser.rs
+@@ -126,6 +126,7 @@ pub enum HLOExpr {
+         tshape: String,
+         ttile: String,
+         source: String,
++        dimensions: String,
+     },
+     Slice {
+         tsymbol: String,
+@@ -261,6 +262,10 @@ pub fn parse_hlo_expr(
+                 tshape: tshape.to_string(),
+                 ttile: ttile.to_string(),
+                 source,
++                dimensions: trest.split("dimensions={").nth(1)
++                    .and_then(|rest| rest.split('}').next())
++                    .expect("broadcast requires dimensions")
++                    .split(',').map(str::trim).collect::<Vec<_>>().join(","),
+             })
+         }
+ 
+@@ -304,7 +309,7 @@ pub fn parse_hlo_expr(
+         | "or"
+         | "shift-left"
+         | "dot"
+-        | "divide" => {
++        | "divide" | "multiply" => {
+             // binary operators with two operands separated by comma
+             let mut parts = toperands.split(',').map(|s| s.trim().to_string());
+             let lhs = parts.next().unwrap_or_default();
+diff --git a/act_backend/generic/src/isel/rewrites/applier.rs b/act_backend/generic/src/isel/rewrites/applier.rs
+index 1feccd33745e13a87335f3b6bdaa606287d21e65..0fc1a22382a02b3f8a3f289799133219a97b5418 100644
+--- a/act_backend/generic/src/isel/rewrites/applier.rs
++++ b/act_backend/generic/src/isel/rewrites/applier.rs
+@@ -86,12 +86,25 @@ impl Applier<TensorOp, TensorInfo> for ApplyRewrite {
+         {
+             return ids;
+         }
++        // PatternAst is a DAG: a shared parameter/subexpression is stored once.
++        // find_matches and generated metadata checks visit each occurrence in
++        // tree post-order. Use that expanded size, not the deduplicated AST size.
++        let mut sizes = Vec::with_capacity(self.lhs.ast.len());
++        for node in self.lhs.ast.as_ref() {
++            let size = match node {
++                ENodeOrVar::Var(_) => 1usize,
++                ENodeOrVar::ENode(op) => 1 + op.children().iter()
++                    .map(|id| sizes[usize::from(*id)]).sum::<usize>(),
++            };
++            sizes.push(size);
++        }
+         let lhs_matches = find_matches(
+             egraph,
+             eclass,
+             self.lhs.ast.len() - 1,
+-            self.lhs.ast.len(),
++            *sizes.last().unwrap(),
+             &self.lhs.ast,
++            subst,
+         );
+         PROCESSED
+             .lock()
+@@ -159,19 +172,20 @@ fn find_matches(
+     pat_idx: usize,
+     limit: usize,
+     pat: &[ENodeOrVar<TensorOp>],
++    subst: &Subst,
+ ) -> Vec<Vec<(Id, Option<TensorOp>)>> {
+     let mut matches = vec![];
+     let pat_node = pat.iter().nth(pat_idx).unwrap();
+     match pat_node {
+-        ENodeOrVar::Var(_) => {
+-            if limit > 0 {
++        ENodeOrVar::Var(var) => {
++            if limit > 0 && egraph.find(subst[*var]) == egraph.find(eclass) {
+                 matches.push(vec![(eclass, None)]);
+             }
+         }
+         ENodeOrVar::ENode(e) => {
+             for en in egraph[eclass].nodes.iter() {
+                 // only consider enodes in root eclass of the same variant as e
+-                if e.discriminant() != en.discriminant() {
++                if !e.matches(en) {
+                     continue;
+                 }
+                 let mut child_matches = vec![];
+@@ -182,6 +196,7 @@ fn find_matches(
+                         e.children()[i].into(),
+                         limit - 1,
+                         pat,
++                        subst,
+                     ));
+                 }
+                 if child_matches.iter().all(|x| !x.is_empty()) {
+diff --git a/act_backend/generic/src/isel/rewrites/joint.rs b/act_backend/generic/src/isel/rewrites/joint.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ee3d677fe679dd961488e4f0f8ff0b7e7d0af97
+--- /dev/null
++++ b/act_backend/generic/src/isel/rewrites/joint.rs
+@@ -0,0 +1,120 @@
++//! Operand feasibility for a particular multi-result semantic match.
++//! A tuple is only a value aggregate; it is never proof that a match is eligible.
++use std::collections::{HashMap, HashSet};
++use std::time::Instant;
++
++use crate::ir::egraph::{tuple_elements, TensorInfo, TensorOp};
++use egg::{EGraph, Id, Language};
++
++/// The external pattern operands of one result, not all nodes inside its body.
++/// An ISA may implement dependencies internally, e.g. outputs f(a), g(f(a)).
++pub(crate) struct ResultMatch {
++    pub value: Id,
++    pub operands: Vec<Id>,
++}
++
++/// An e-class is an OR of implementations; one implementation needs ALL inputs.
++/// Discovery can reuse this snapshot until the next refresh. ISA preconditions
++/// construct a fresh snapshot so another match/rewrite cannot inherit a verdict.
++#[derive(Default)]
++pub(crate) struct Derivations {
++    alternatives: Vec<(Id, Vec<Id>)>,
++    independent: HashMap<Vec<Id>, HashSet<Id>>,
++}
++
++impl Derivations {
++    pub(crate) fn new(graph: &EGraph<TensorOp, TensorInfo>) -> Self {
++        let mut alternatives = vec![];
++        for class in graph.classes() {
++            for op in &class.nodes {
++                let children = if let TensorOp::OpGetTupleElement(index, [tuple]) = op {
++                    // A projection needs its selected element, not its siblings.
++                    let Some(elements) = tuple_elements(graph, *tuple) else {
++                        continue;
++                    };
++                    let Some(&element) = elements.get(*index) else {
++                        continue;
++                    };
++                    vec![element]
++                } else {
++                    op.children().to_vec()
++                };
++                alternatives.push((
++                    class.id,
++                    children.into_iter().map(|id| graph.find(id)).collect(),
++                ));
++            }
++        }
++        Self {
++            alternatives,
++            independent: HashMap::new(),
++        }
++    }
++
++    fn without(&mut self, blocked: Vec<Id>, deadline: Option<Instant>) -> Option<&HashSet<Id>> {
++        if !self.independent.contains_key(&blocked) {
++            let forbidden: HashSet<_> = blocked.iter().copied().collect();
++            let mut available = HashSet::new();
++            // Least fixed point: only finite derivations from leaves qualify.
++            // Copy/projection cycles cannot establish availability by themselves.
++            loop {
++                if deadline.is_some_and(|end| Instant::now() >= end) {
++                    return None;
++                }
++                let before = available.len();
++                for (id, children) in &self.alternatives {
++                    // An equivalent input/constant needs no result execution.
++                    if (children.is_empty() || !forbidden.contains(id))
++                        && children.iter().all(|c| available.contains(c))
++                    {
++                        available.insert(*id);
++                    }
++                }
++                if available.len() == before {
++                    break;
++                }
++            }
++            self.independent.insert(blocked.clone(), available);
++        }
++        self.independent.get(&blocked)
++    }
++
++    pub(crate) fn inputs_available(
++        &mut self,
++        results: &[ResultMatch],
++        deadline: Option<Instant>,
++    ) -> bool {
++        for result in results {
++            let mut blocked: Vec<_> = results
++                .iter()
++                .map(|other| other.value)
++                .filter(|&id| id != result.value)
++                .collect();
++            blocked.sort_unstable();
++            blocked.dedup();
++            let Some(available) = self.without(blocked, deadline) else {
++                return false;
++            };
++            if result.operands.iter().any(|id| !available.contains(id)) {
++                return false;
++            }
++        }
++        true
++    }
++}
++
++/// Authoritative ISA gate, independent of how the tuple entered the e-graph.
++/// No persistent pass/fail cache: unions can change eligibility between calls.
++pub(crate) fn inputs_available(
++    graph: &EGraph<TensorOp, TensorInfo>,
++    results: &[ResultMatch],
++) -> bool {
++    let results: Vec<_> = results
++        .iter()
++        .map(|result| ResultMatch {
++            value: graph.find(result.value),
++            operands: result.operands.iter().map(|&id| graph.find(id)).collect(),
++        })
++        .collect();
++    Derivations::new(graph).inputs_available(&results, None)
++}
+diff --git a/act_backend/generic/src/isel/rewrites/lib.rs b/act_backend/generic/src/isel/rewrites/lib.rs
+index be65140b598468fc14530060c8ebdc2d85805dfe..614996afd64a680383667bb7ec1c69b9fe3d7f01 100644
+--- a/act_backend/generic/src/isel/rewrites/lib.rs
++++ b/act_backend/generic/src/isel/rewrites/lib.rs
+@@ -24,5 +24,6 @@ pub fn get_rewrites() -> Vec<Rewrite<TensorOp, TensorInfo>> {
+     for rewrite_str in [ir2ir, ir2isa].concat().iter() {
+         rewrites.push(get_applier(rewrite_str));
+     }
++    rewrites.push(super::tuple::projection_rule());
+     rewrites
+ }
+diff --git a/act_backend/generic/src/isel/rewrites/mod.rs b/act_backend/generic/src/isel/rewrites/mod.rs
+index 3f62120a23bf4435b84888a9bb31bdd3c5dcac27..538ba79b04c0f2613d82005bdd65cbc0c3cfa326 100644
+--- a/act_backend/generic/src/isel/rewrites/mod.rs
++++ b/act_backend/generic/src/isel/rewrites/mod.rs
+@@ -1,6 +1,9 @@
+ mod applier;
+ mod ir2ir_rewrites;
+ mod ir2isa_rewrites;
++pub(crate) mod joint;
++pub use ir2isa_rewrites::multi_result_typed_patterns;
+ mod lib;
++mod tuple;
+ 
+ pub use lib::get_rewrites;
+diff --git a/act_backend/generic/src/isel/rewrites/tuple.rs b/act_backend/generic/src/isel/rewrites/tuple.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4e560fc5ee492bf1d9b842c32a4fe109e648f56
+--- /dev/null
++++ b/act_backend/generic/src/isel/rewrites/tuple.rs
+@@ -0,0 +1,52 @@
++use egg::{EGraph, Id, Pattern, Rewrite, SearchMatches, Searcher, Subst, Var};
++
++use crate::ir::egraph::{TensorInfo, TensorOp};
++
++/// GTE(Tuple(a0, ..., an), i) == ai, including tuple-valued elements.
++/// Union adds the direct value alternative; it does not erase the GTE edge
++/// through which a later tuple-producing instruction can still be selected.
++struct TupleProjection;
++
++impl Searcher<TensorOp, TensorInfo> for TupleProjection {
++    fn search_eclass_with_limit(
++        &self,
++        egraph: &EGraph<TensorOp, TensorInfo>,
++        eclass: Id,
++        limit: usize,
++    ) -> Option<SearchMatches<'_, TensorOp>> {
++        let mut substs = vec![];
++        for op in &egraph[eclass].nodes {
++            if let TensorOp::OpGetTupleElement(index, [tuple]) = op {
++                for candidate in &egraph[*tuple].nodes {
++                    if let TensorOp::OpTuple(children) = candidate {
++                        if let Some(&element) = children.get(*index) {
++                            if substs.len() < limit && egraph[eclass].data == egraph[element].data {
++                                let mut subst = Subst::default();
++                                subst.insert("?element".parse().unwrap(), element);
++                                substs.push(subst);
++                            }
++                        }
++                    }
++                }
++            }
++        }
++        (!substs.is_empty()).then_some(SearchMatches {
++            eclass,
++            substs,
++            ast: None,
++        })
++    }
++
++    fn vars(&self) -> Vec<Var> {
++        vec!["?element".parse().unwrap()]
++    }
++}
++
++pub fn projection_rule() -> Rewrite<TensorOp, TensorInfo> {
++    Rewrite::new(
++        "tuple-projection",
++        TupleProjection,
++        "?element".parse::<Pattern<TensorOp>>().unwrap(),
++    )
++    .unwrap()
++}
+diff --git a/act_backend/isel_ir2isa_rewrites_rs_generator.py b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+index fb1dc4ff902f959aa1e920b154b83d118c55d4a6..d292673cdac5be159d603449f5f89f8ec79acd79 100644
+--- a/act_backend/isel_ir2isa_rewrites_rs_generator.py
++++ b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+@@ -1,422 +1,155 @@
+-import os
+-import re
+-from taidl.antlr4 import IDLV2Parser, IDLV2Visitor
+-from .template_loader import get_backend_template_loader
+-
+-
+-class RustGeneratorVisitor(IDLV2Visitor):
+-    def __init__(self):
+-        super().__init__()
+-        self.assignments = []
+-        self.root_assignment = None
+-        self.comp_attributes = set()
+-        self.variable_definitions = {}
+-        self.variable_usage = set()
+-
+-    def visitModule(self, ctx):
+-        self.visitChildren(ctx)
+-
+-        duplicates = [a for a in self.assignments if a['lhs'].endswith('_dup')]
+-        non_duplicates = [a for a in self.assignments if not a['lhs'].endswith('_dup')]
+-        self.assignments = duplicates + non_duplicates
+-
+-        if self.root_assignment:
+-            for assignment in self.assignments:
+-                if assignment['lhs'] == self.root_assignment['lhs']:
+-                    self.root_assignment = assignment
+-                    break
+-
+-        return {
+-            'assignments': self.assignments,
+-            'root_assignment': self.root_assignment,
+-            'comp_attributes': list(self.comp_attributes)
+-        }
+-
+-    def visitInstruction(self, ctx):
+-        lhs_name = ctx.IDENTIFIER().getText()
+-        result_type_info = self.visit(ctx.result_type())
+-        lhs_type, lhs_shape = result_type_info
+-
+-        is_root = ctx.ROOT() is not None
+-
+-        self._extract_comp_attrs_from_text(lhs_shape)
+-
+-        operand_names = []
+-        if ctx.operands():
+-            operands = self.visit(ctx.operands())
+-            for operand_text, operand_type in operands:
+-                self._extract_comp_attrs_from_text(operand_text)
+-                if operand_type == 'IDENTIFIER':
+-                    operand_names.append(operand_text)
+-
+-        for operand_text in operand_names:
+-            if operand_text in self.variable_definitions:
+-                if operand_text in self.variable_usage:
+-                    self._duplicate_variable_recursive(operand_text)
+-                else:
+-                    self.variable_usage.add(operand_text)
+-
+-        if ctx.attributes():
+-            attributes = self.visit(ctx.attributes())
+-            for _, attr_value, attr_type in attributes:
+-                if attr_type in ['EXPRESSION', 'BRACELIST']:
+-                    self._extract_comp_attrs_from_text(str(attr_value))
+-
+-        assignment = {
+-            'lhs': lhs_name,
+-            'dtype': lhs_type,
+-            'shape': lhs_shape,
+-            'operands': operand_names
+-        }
+-
+-        self.variable_definitions[lhs_name] = len(self.assignments)
+-        self.assignments.append(assignment)
+-
+-        if is_root:
+-            self.root_assignment = assignment
+-
+-        return assignment
+-
+-    def _duplicate_variable_recursive(self, var_name):
+-        dup_name = f"{var_name}_dup"
+-
+-        if dup_name in self.variable_definitions:
+-            return
+-
+-        original = self.assignments[self.variable_definitions[var_name]]
+-
+-        for operand in original['operands']:
+-            if operand in self.variable_definitions:
+-                self._duplicate_variable_recursive(operand)
+-
+-        duplicate = {
+-            'lhs': dup_name,
+-            'dtype': original['dtype'],
+-            'shape': original['shape'],
+-            'operands': original['operands']
+-        }
+-        self.variable_definitions[dup_name] = len(self.assignments)
+-        self.assignments.append(duplicate)
+-
+-    def _extract_comp_attrs_from_text(self, text):
+-        pattern = r'@c\.(\w+)'
+-        matches = re.findall(pattern, str(text))
+-        self.comp_attributes.update(matches)
+-
+-    def visitResult_type(self, ctx):
+-        shape_info = self.visit(ctx.shape())
+-        shape_dims, shape_type = shape_info
+-        return (shape_type, shape_dims)
+-
+-    def visitShape(self, ctx):
+-        dims = ctx.getText()
+-        typ = ctx.parentCtx.TYPE().getText()
+-        return (dims, typ)
+-
+-    def visitOperands(self, ctx):
+-        operand_list = []
+-        for operand_ctx in ctx.operand():
+-            operand_info = self.visit(operand_ctx)
+-            operand_list.append(operand_info)
+-        return operand_list
+-
+-    def visitOperand(self, ctx):
+-        value_ctx = ctx.value()
+-        value_text = value_ctx.getText()
+-
+-        if value_ctx.INT():
+-            operand_type = 'INT'
+-        elif value_ctx.IDENTIFIER():
+-            operand_type = 'IDENTIFIER'
+-        elif value_ctx.EXPRESSION():
+-            operand_type = 'EXPRESSION'
+-        else:
+-            operand_type = 'UNKNOWN'
+-
+-        return (value_text, operand_type)
+-
+-    def visitAttributes(self, ctx):
+-        attributes_list = []
+-        for attribute_ctx in ctx.attribute():
+-            attr_info = self.visit(attribute_ctx)
+-            attributes_list.append(attr_info)
+-        return attributes_list
+-
+-    def visitAttribute(self, ctx):
+-        attr_name = ctx.IDENTIFIER().getText()
+-        attr_value_info = self.visit(ctx.attributeValue())
+-        attr_value, attr_type = attr_value_info
+-        return (attr_name, attr_value, attr_type)
+-
+-    def visitAttributeValue(self, ctx):
+-        if ctx.braceList():
+-            brace_info = self.visit(ctx.braceList())
+-            return (brace_info, 'BRACELIST')
+-        elif ctx.value():
+-            value_ctx = ctx.value()
+-            value_text = value_ctx.getText()
+-
+-            if value_ctx.INT():
+-                value_type = 'INT'
+-            elif value_ctx.IDENTIFIER():
+-                value_type = 'IDENTIFIER'
+-            elif value_ctx.EXPRESSION():
+-                value_type = 'EXPRESSION'
+-            else:
+-                value_type = 'UNKNOWN'
+-
+-            return (value_text, value_type)
+-        else:
+-            return ("", "UNKNOWN")
+-
++"""Generate checked ISA rewrites and discovery patterns from the same DAG."""
++import json
++from pathlib import Path
+ 
++from .semantics import dimension, lower_semantics
+ 
+ 
+ def map_dtype_to_rust(dtype):
+-    dtype_map = {
+-        's8': 'Dtype::I8',
+-        'u8': 'Dtype::U8',
+-        's32': 'Dtype::I32',
+-        'u32': 'Dtype::U32',
+-        'bf16': 'Dtype::BF16'
+-    }
+-
+-    rust_type = dtype_map.get(dtype)
+-    assert (rust_type != None)
+-    return rust_type
+-
+-
+-def extract_comp_attr_from_shape(shape_text, comp_attrs):
+-    # Find the computational attribute that appears in the shape
+-    for attr in comp_attrs:
+-        if f'@c.{attr}' in shape_text:
+-            return attr
+-    return comp_attrs[0] if comp_attrs else None
+-
+-
+-def parse_comp_attr_expression(shape_expr, comp_attr):
+-    # Only works with @c.attr or @c.attr * constant
+-    # Very fragile but should work
+-    if not comp_attr or f'@c.{comp_attr}' not in shape_expr:
+-        return comp_attr, []
+-
+-    expr = shape_expr.replace('`', '').replace(' ', '')
+-    pattern = f'@c.{comp_attr}'
+-
+-    if f'{pattern}*' in expr:
+-        start = expr.index(pattern) + len(pattern) + 1
+-        factor_str = ''
+-        for char in expr[start:]:
+-            if char.isdigit():
+-                factor_str += char
+-            else:
+-                break
+-        return comp_attr, [int(factor_str)]
+-
+-    return comp_attr, []
+-
+-
+-def generate_comp_attr_extraction(root_assignment, comp_attr, num_assignments):
+-    # Generate computational attribute extraction code from ROOT assignment
+-    if not comp_attr or not root_assignment:
++    mapping = {"s8": "S8", "u8": "U8", "s32": "S32", "u32": "U32",
++               "f32": "FP32", "bf16": "BF16"}
++    if dtype not in mapping:
++        raise ValueError(f"Unsupported TensorOp dtype: {dtype}")
++    return "Dtype::" + mapping[dtype]
++
++
++def dim_rust(text):
++    attr, factor, offset = dimension(text)
++    return str(offset) if attr is None else f"({attr} * {factor} + {offset})"
++
++
++def shape_checks(semantics):
++    code = []
++    occurrences = {}
++    for i, node in enumerate(semantics.postorder):
++        if node.token.startswith("?"):
++            first = occurrences.setdefault(node.token, i)
++            if first != i:
++                code.append(f"    if egraph.find(lhs_eclasses[{first}]) != egraph.find(lhs_eclasses[{i}]) {{ return None; }}")
++    for i, node in enumerate(semantics.postorder):
++        code.append(f"    if lhs_metadata[{i}].dtype != {map_dtype_to_rust(node.dtype)}"
++                    f" || lhs_metadata[{i}].shape.len() != {len(node.shape)} {{ return None; }}")
++    for attr in semantics.attributes:
++        position = next((i, axis, factor, offset)
++                        for i, node in enumerate(semantics.postorder)
++                        for axis, text in enumerate(node.shape)
++                        for name, factor, offset in [dimension(text)] if name == attr)
++        i, axis, factor, offset = position
++        code.append(f"    let numerator = i64::from(lhs_metadata[{i}].shape[{axis}]) - ({offset});")
++        code.append(f"    if numerator % ({factor}) != 0 {{ return None; }}")
++        code.append(f"    let {attr} = numerator / ({factor});")
++        code.append(f"    if {attr} < 0 || {attr} > i64::from(i32::MAX) {{ return None; }}")
++    for i, node in enumerate(semantics.postorder):
++        for axis, text in enumerate(node.shape):
++            code.append(f"    if i64::from(lhs_metadata[{i}].shape[{axis}]) != {dim_rust(text)} {{ return None; }}")
++        if "dimensions" in node.attrs:
++            dimensions = node.attrs["dimensions"].strip("{}").split(",")
++            values = [dim_rust(value) for value in dimensions if value.strip()]
++            value = 'format!(' + json.dumps(",".join(["{}"] * len(values)))
++            value += (", " + ", ".join(values) if values else "") + ")"
++            variant = {"broadcast": "OpBroadcast", "transpose": "OpTranspose",
++                       "concatenate": "OpConcat", "concat": "OpConcat",
++                       "reduce_add": "OpReduceSum"}[node.operation]
++            # Check metadata of the same operation with the same child values.
++            def size(n):
++                return 1 + sum(size(child) for child in n.children)
++            end = i
++            child_positions = []
++            for child in reversed(node.children):
++                end -= 1
++                child_positions.insert(0, end)
++                end -= size(child) - 1
++            same = " && ".join(f"egraph.find(ids[{j}]) == egraph.find(lhs_eclasses[{p}])"
++                               for j, p in enumerate(child_positions)) or "true"
++            code.append(f"    if !egraph[lhs_eclasses[{i}]].nodes.iter().any(|node| matches!(node,"
++                        f" TensorOp::{variant}(data, ids) if data.split(',').map(str::trim).collect::<Vec<_>>().join(\",\") == {value} && {same})) {{ return None; }}")
++    return "\n".join(code)
++
++
++def joint_input_check(semantics):
++    """Recover each result and its external parameters in expanded postorder.
++
++    Internal nodes are part of the declared instruction, not external operands:
++    outputs f(a), g(f(a)) may validly be produced by one sequential instruction.
++    """
++    if len(semantics.results) == 1:
+         return ""
+ 
+-    comp_attr, factors = parse_comp_attr_expression(root_assignment['shape'], comp_attr)
+-    root_index = num_assignments - 1  # ROOT is always the last assignment
+-
+-    if factors:
+-        # Calculate division factor as product of all factors
+-        division_factor = 1
+-        for factor in factors:
+-            division_factor *= factor
+-        return f"    let {comp_attr} = lhs_metadata[{root_index}].shape[0] / {division_factor};\n"
++    def size(node):
++        return 1 + sum(size(child) for child in node.children)
++
++    entries = []
++    start = 0
++    for root in semantics.results:
++        end = start + size(root)
++        parameters = {}
++        for index in range(start, end):
++            token = semantics.postorder[index].token
++            if token.startswith("?"):
++                parameters.setdefault(token, index)
++        operands = ", ".join(f"lhs_eclasses[{index}]" for index in parameters.values())
++        entries.append("        super::joint::ResultMatch { "
++                       f"value: lhs_eclasses[{end - 1}], operands: vec![{operands}] " + "},")
++        start = end
++    assert start == len(semantics.postorder)
++    return "\n        && super::joint::inputs_available(egraph, &[\n" + "\n".join(entries) + "\n    ])"
++
++
++def rust_functions(metadata, semantics):
++    name = metadata.name
++    count = len(semantics.postorder) + (len(semantics.results) > 1)
++    attrs = ", ".join(semantics.attributes)
++    code = f"""fn infer_{name}(egraph: &EGraph<TensorOp, TensorInfo>, lhs_eclasses: &Vec<Id>) -> Option<Vec<i64>> {{
++    if lhs_eclasses.len() != {count} {{ return None; }}
++    if lhs_eclasses[..{len(semantics.postorder)}].iter().any(|&id| crate::ir::egraph::tuple_elements(egraph, id).is_some()) {{ return None; }}
++    let lhs_metadata: Vec<_> = lhs_eclasses.iter().map(|id| &egraph[*id].data).collect();
++{shape_checks(semantics)}
++    Some(vec![{attrs}])
++}}
++pub fn precond_{name}(egraph: &EGraph<TensorOp, TensorInfo>, lhs_eclasses: &Vec<Id>) -> bool {{
++    infer_{name}(egraph, lhs_eclasses).is_some(){joint_input_check(semantics)}
++}}
++pub fn metadata_{name}(egraph: &EGraph<TensorOp, TensorInfo>, lhs_eclasses: &Vec<Id>, _lhs_enodes: &Vec<Option<TensorOp>>) -> Vec<Option<String>> {{
++    let mut result = vec![None; {metadata.rhs_size}];
++"""
++    if semantics.attributes:
++        code += f'    let attrs = infer_{name}(egraph, lhs_eclasses).expect("Checked semantics");\n'
++        code += '    *result.last_mut().unwrap() = Some(attrs.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(","));\n'
++    code += f"""    result
++}}
++pub fn set_shapes_{name}(egraph: &mut EGraph<TensorOp, TensorInfo>, lhs_eclasses: &Vec<Id>, rhs_eclasses: &Vec<Id>) {{
++"""
++    if len(semantics.results) == 1:
++        code += "    let data = egraph[*lhs_eclasses.last().unwrap()].data.clone();\n"
++        code += "    egraph.set_analysis_data(*rhs_eclasses.last().unwrap(), data);\n"
+     else:
+-        return f"    let {comp_attr} = lhs_metadata[{root_index}].shape[0];\n"
+-
+-
+-def generate_precond_function(instruction_name, semantics_data, rhs_size, templates):
+-    if not semantics_data:
+-        return ""
+-
+-    assignments = semantics_data['assignments']
+-    root_assignment = semantics_data['root_assignment']
+-    comp_attrs = semantics_data['comp_attributes']
+-
+-    num_assignments = len(assignments)
+-    comp_attr = None
+-
+-    if root_assignment and comp_attrs:
+-        comp_attr = extract_comp_attr_from_shape(root_assignment['shape'], comp_attrs)
+-
+-    # Generate comp attribute extraction
+-    comp_attr_code = generate_comp_attr_extraction(root_assignment, comp_attr, num_assignments)
+-
+-    # Generate shape/dtype checks for all assignments
+-    shape_checks = []
+-    for i, assignment in enumerate(assignments):
+-        dtype_rust = map_dtype_to_rust(assignment['dtype'])
+-        shape_expr = assignment['shape']
+-
+-        # Parse shape expression to extract dimensions
+-        shape_expr = shape_expr.replace('`', '').replace(' ', '')
+-
+-        # Replace all @c.attr patterns with variable names
+-        if comp_attr:
+-            shape_expr = shape_expr.replace(f'@c.{comp_attr}', comp_attr)
+-
+-        shape_expr = re.sub(r'@c\.(\w+)', r'\1', shape_expr)
+-
+-        if ',' in shape_expr:
+-            dims = [d.strip() for d in shape_expr.split(',')]
+-        else:
+-            dims = [shape_expr]
+-
+-        shape_vec = f"vec![{', '.join(dims)}]"
+-
+-        shape_check = templates.render("ir2isa_rewrites.rs.IR2ISA_REWRITE_FUNCTIONS.shape_check.txt",
+-                                       index=str(i),
+-                                       shape_vec=shape_vec,
+-                                       dtype=dtype_rust
+-                                       )
+-        shape_checks.append(shape_check)
+-
+-    shape_checks_code = '\n'.join(shape_checks)
+-
+-    return templates.render("ir2isa_rewrites.rs.IR2ISA_REWRITE_FUNCTIONS.precond.txt",
+-                            instruction_name=instruction_name,
+-                            num_assignments=str(num_assignments),
+-                            comp_attr_code=comp_attr_code,
+-                            shape_checks=shape_checks_code
+-                            )
+-
+-
+-def generate_metadata_function(instruction_name, semantics_data, rhs_size, templates):
+-    if not semantics_data:
+-        return ""
+-
+-    assignments = semantics_data['assignments']
+-    comp_attrs = semantics_data['comp_attributes']
+-    root_assignment = semantics_data['root_assignment']
+-
+-    num_assignments = len(assignments)
+-    comp_attr = None
+-
+-    if root_assignment and comp_attrs:
+-        comp_attr = extract_comp_attr_from_shape(root_assignment['shape'], comp_attrs)
+-
+-    if comp_attr:
+-        # Use unified comp_attr extraction logic - same as precond function
+-        comp_attr_extraction = generate_comp_attr_extraction(
+-            root_assignment, comp_attr, num_assignments)
+-
+-        return templates.render("ir2isa_rewrites.rs.IR2ISA_REWRITE_FUNCTIONS.metadata_with_attr.txt",
+-                                instruction_name=instruction_name,
+-                                num_assignments=str(num_assignments),
+-                                comp_attr=comp_attr,
+-                                comp_attr_extraction=comp_attr_extraction.strip(),
+-                                rhs_size=str(rhs_size)
+-                                )
+-    else:
+-        return templates.render("ir2isa_rewrites.rs.IR2ISA_REWRITE_FUNCTIONS.metadata_no_attr.txt",
+-                                instruction_name=instruction_name,
+-                                num_assignments=str(num_assignments),
+-                                rhs_size=str(rhs_size)
+-                                )
+-
+-
+-def generate_set_shapes_function(instruction_name, semantics_data, rhs_size, templates):
+-    if not semantics_data:
+-        return ""
+-
+-    assignments = semantics_data['assignments']
+-    root_assignment = semantics_data['root_assignment']
+-    comp_attrs = semantics_data['comp_attributes']
+-
+-    num_assignments = len(assignments)
+-    comp_attr = None
+-
+-    if root_assignment and comp_attrs:
+-        comp_attr = extract_comp_attr_from_shape(root_assignment['shape'], comp_attrs)
+-
+-    # Generate metadata extraction - use unified logic same as other functions
+-    if comp_attr:
+-        metadata_code = "    let lhs_metadata: Vec<TensorInfo> = lhs_eclasses.iter().map(|id| egraph[*id].data.clone()).collect();\n" + generate_comp_attr_extraction(
+-            root_assignment, comp_attr, num_assignments)
+-    else:
+-        metadata_code = "    let _lhs_metadata: Vec<TensorInfo> = lhs_eclasses.iter().map(|id| egraph[*id].data.clone()).collect();\n"
+-
+-    # Generate shape setting
+-    shape_setting = ""
+-    if root_assignment:
+-        dtype_rust = map_dtype_to_rust(root_assignment['dtype'])
+-        shape_expr = root_assignment['shape']
+-
+-        # Parse shape expression
+-        shape_expr = shape_expr.replace('`', '').replace(' ', '')
+-
+-        # Replace all @c.attr patterns with variable names
+-        if comp_attr:
+-            shape_expr = shape_expr.replace(f'@c.{comp_attr}', comp_attr)
+-
+-        shape_expr = re.sub(r'@c\.(\w+)', r'\1', shape_expr)
+-
+-        if ',' in shape_expr:
+-            dims = [d.strip() for d in shape_expr.split(',')]
+-        else:
+-            dims = [shape_expr]
+-
+-        shape_vec = f"vec![{', '.join(dims)}]"
+-
+-        shape_setting = templates.render("ir2isa_rewrites.rs.IR2ISA_REWRITE_FUNCTIONS.shape_setting.txt",
+-                                         shape_vec=shape_vec,
+-                                         dtype=dtype_rust
+-                                         )
+-
+-    return templates.render("ir2isa_rewrites.rs.IR2ISA_REWRITE_FUNCTIONS.set_shapes.txt",
+-                            instruction_name=instruction_name,
+-                            num_assignments=str(num_assignments),
+-                            rhs_size=str(rhs_size),
+-                            metadata_code=metadata_code,
+-                            shape_setting=shape_setting
+-                            )
++        code += "    // Tuple element metadata stays on the OpTuple children, not a fake tensor.\n"
++    return code + "}\n"
+ 
+ 
+ def generate_ir2isa_rust_functions(metadata, templates):
+-    visitor = RustGeneratorVisitor()
+-    semantics_data = visitor.visit(metadata.semantics_ast)
+-    if not semantics_data:
+-        return f"// Failed to parse semantics for {metadata.name}\n"
+-
+-    precond = generate_precond_function(metadata.name, semantics_data, metadata.rhs_size, templates)
+-    metadata_func = generate_metadata_function(
+-        metadata.name, semantics_data, metadata.rhs_size, templates)
+-    set_shapes = generate_set_shapes_function(
+-        metadata.name, semantics_data, metadata.rhs_size, templates)
+-
+-    return f"{precond}\n\n{metadata_func}\n\n{set_shapes}\n\n"
++    return rust_functions(metadata, lower_semantics(metadata))
+ 
+ 
+-def generate_ir2isa_rewrites_rs_file(backend_gen_dir: str, instruction_metadata_list):
+-    """Template ir2isa_rewrites.rs from generic file"""
+-    templates = get_backend_template_loader()
+-
+-    # Read generic file
+-    rust_file = os.path.join(backend_gen_dir, 'src', 'isel', 'rewrites', 'ir2isa_rewrites.rs')
+-    with open(rust_file, 'r') as f:
+-        content = f.read()
+-
+-    # Generate all rewrite functions
+-    functions = []
++def generate_ir2isa_rewrites_rs_file(backend_gen_dir, instruction_metadata_list):
++    functions, typed = [], []
+     for metadata in instruction_metadata_list:
+-        func_code = generate_ir2isa_rust_functions(metadata, templates)
+-        functions.append(func_code)
+-
+-    # Join functions with newlines
+-    all_functions = ''.join(functions)
+-
+-    # Replace placeholder
+-    content = content.replace('{{IR2ISA_REWRITE_FUNCTIONS}}', all_functions)
+-
+-    # Write back
+-    with open(rust_file, 'w') as f:
+-        f.write(content)
++        semantics = lower_semantics(metadata)
++        functions.append(rust_functions(metadata, semantics))
++        if len(semantics.results) == 1:
++            continue
++        values = []
++        for part, root in zip(semantics.match_parts, semantics.results):
++            shape = []
++            for text in root.shape:
++                attr, _, constant = dimension(text)
++                shape.append("None" if attr else f"Some({constant})")
++            values.append(f"({json.dumps(part)}, {map_dtype_to_rust(root.dtype)}, vec![{', '.join(shape)}])")
++        typed.append(f"({json.dumps(metadata.name)}, vec![{', '.join(values)}])")
++    # Discovery accepts symbolic axes; the generated precondition checks every
++    # shape equation, including shared attributes across all result branches.
++    functions.append(
++        "pub fn multi_result_typed_patterns() -> Vec<(&'static str, Vec<(&'static str, Dtype, Vec<Option<i32>>)>)> {\n"
++        + "    vec![" + ", ".join(typed) + "]\n}\n")
++    path = Path(backend_gen_dir) / "src/isel/rewrites/ir2isa_rewrites.rs"
++    path.write_text(path.read_text().replace("{{IR2ISA_REWRITE_FUNCTIONS}}", "\n".join(functions)))
+diff --git a/act_backend/isel_ir2isa_rewrites_txt_generator.py b/act_backend/isel_ir2isa_rewrites_txt_generator.py
+index 383c47b0a827b610b5f269d394155d0b13f813cf..ae3c4fe2e5b750f3fc9e4cd83ad4bdac4594e783 100644
+--- a/act_backend/isel_ir2isa_rewrites_txt_generator.py
++++ b/act_backend/isel_ir2isa_rewrites_txt_generator.py
+@@ -1,211 +1,16 @@
+-import os
+-from taidl.antlr4 import IDLV2Parser, IDLV2Visitor
+-from .template_loader import get_backend_template_loader
+-
+-
+-class RewriteRuleVisitor(IDLV2Visitor):
+-    OP_MAP = {
+-        'reshape': 'reshape_?', 'convert': 'convert_?', 'slice': 'slice_?',
+-        'transpose': 'transpose_?', 'broadcast': 'broadcast_?', 'concat': 'concat_?',
+-        'constant': 'constant_?', 'eye': 'eye_?',
+-        'bitcast_convert': 'bitcvt',
+-        'reduce_add': 'reduce_?',
+-        'shift_left': 'shift-left', 'shift_right_logical': 'shift-right-logical',
+-    }
+-
+-    def __init__(self):
+-        super().__init__()
+-        self.pattern_stack = []
+-        self.variable_counter = 0
+-        self.input_variables = {}
+-        self.parameter_variables = {}
+-        self.variable_definitions = {}
+-        self.root_variable = None
+-        self.variable_usage_count = set()
+-
+-    def get_next_variable(self):
+-        var_name = f"?{chr(ord('a') + self.variable_counter)}"
+-        self.variable_counter += 1
+-        return var_name
+-
+-    def substitute_params(self, pattern, substitutions):
+-        result = pattern
+-        for old_var, new_var in substitutions.items():
+-            result = result.replace(old_var, new_var)
+-        return result
+-
+-    def visitModule(self, ctx: IDLV2Parser.ModuleContext):
+-        self.visitChildren(ctx)
+-        if self.root_variable and self.root_variable in self.variable_definitions:
+-            return self.variable_definitions[self.root_variable]
+-        elif self.pattern_stack:
+-            return self.pattern_stack[-1]
+-        return None
+-
+-    def get_parameter_variables(self):
+-        sorted_params = sorted(self.parameter_variables.items(), key=lambda x: x[0])
+-        return [var for param_num, var in sorted_params]
+-
+-    def visitInstruction(self, ctx: IDLV2Parser.InstructionContext):
+-        lhs_name = ctx.IDENTIFIER().getText()
+-        op_name = ctx.OPERATION().getText()
+-
+-        is_root = ctx.ROOT() is not None
+-        if is_root:
+-            self.root_variable = lhs_name
+-
+-        if op_name == 'parameter':
+-            if ctx.operands():
+-                operand_info = self.visit(ctx.operands())
+-                if operand_info:
+-                    param_num = int(operand_info[0][0])
+-                    var = self.get_next_variable()
+-                    self.parameter_variables[param_num] = var
+-                    self.variable_definitions[lhs_name] = var
+-                    return var
+-
+-        operand_patterns = []
+-        if ctx.operands():
+-            operand_info = self.visit(ctx.operands())
+-            for operand_value, operand_type in operand_info:
+-                if operand_type == 'IDENTIFIER':
+-                    if operand_value in self.variable_definitions:
+-                        pattern = self.variable_definitions[operand_value]
+-
+-                        if operand_value in self.variable_usage_count:
+-                            substitutions = {}
+-                            for param_var in self.parameter_variables.values():
+-                                if param_var in pattern:
+-                                    fresh_var = self.get_next_variable()
+-                                    substitutions[param_var] = fresh_var
+-                            if substitutions:
+-                                pattern = self.substitute_params(pattern, substitutions)
+-                        else:
+-                            self.variable_usage_count.add(operand_value)
+-
+-                        operand_patterns.append(pattern)
+-                    else:
+-                        var = self.get_next_variable()
+-                        operand_patterns.append(var)
+-
+-        rewrite_op_name = self.OP_MAP.get(op_name, op_name)
+-        pattern = f"({rewrite_op_name} {' '.join(operand_patterns)})" if operand_patterns else f"({rewrite_op_name})"
+-
+-        self.variable_definitions[lhs_name] = pattern
+-        self.pattern_stack.append(pattern)
+-
+-        return pattern
+-
+-    def visitOperands(self, ctx: IDLV2Parser.OperandsContext):
+-        operand_list = []
+-        for operand_ctx in ctx.operand():
+-            operand_info = self.visit(operand_ctx)
+-            operand_list.append(operand_info)
+-        return operand_list
+-
+-    def visitOperand(self, ctx: IDLV2Parser.OperandContext):
+-        value_ctx = ctx.value()
+-        value_text = value_ctx.getText()
+-
+-        if value_ctx.INT():
+-            operand_type = 'INT'
+-        elif value_ctx.IDENTIFIER():
+-            operand_type = 'IDENTIFIER'
+-        elif value_ctx.EXPRESSION():
+-            operand_type = 'EXPRESSION'
+-        else:
+-            operand_type = 'UNKNOWN'
+-
+-        return (value_text, operand_type)
+-
+-    def visitAttributes(self, ctx: IDLV2Parser.AttributesContext):
+-        attributes_list = []
+-        for attribute_ctx in ctx.attribute():
+-            attr_info = self.visit(attribute_ctx)
+-            attributes_list.append(attr_info)
+-        return attributes_list
+-
+-    def visitAttribute(self, ctx: IDLV2Parser.AttributeContext):
+-        attr_name = ctx.IDENTIFIER().getText()
+-        attr_value_info = self.visit(ctx.attributeValue())
+-        attr_value, attr_type = attr_value_info
+-        return (attr_name, attr_value, attr_type)
+-
+-    def visitAttributeValue(self, ctx: IDLV2Parser.AttributeValueContext):
+-        if ctx.braceList():
+-            brace_info = self.visit(ctx.braceList())
+-            return (brace_info, 'BRACELIST')
+-        elif ctx.value():
+-            value_ctx = ctx.value()
+-            value_text = value_ctx.getText()
+-
+-            if value_ctx.INT():
+-                value_type = 'INT'
+-            elif value_ctx.IDENTIFIER():
+-                value_type = 'IDENTIFIER'
+-            elif value_ctx.EXPRESSION():
+-                value_type = 'EXPRESSION'
+-            else:
+-                value_type = 'UNKNOWN'
+-
+-            return (value_text, value_type)
++"""Generate IR-to-ISA rules using the shared semantic DAG lowering."""
++from pathlib import Path
++from .semantics import lower_semantics
+ 
+ 
+ def generate_rewrite_rule(metadata, templates):
+-    """Generate a single rewrite rule using template"""
+-    visitor = RewriteRuleVisitor()
+-    lhs_pattern = visitor.visit(metadata.semantics_ast)
+-    parameter_vars = visitor.get_parameter_variables()
+-    kebab_name = metadata.name.replace('_', '-')
+-
+-    # Fallback for unparseable semantics
+-    if not (lhs_pattern and parameter_vars):
+-        # Use fixed padding for fallback
+-        padding = ' ' * (19 - len(kebab_name))
+-        return templates.render(
+-            "ir2isa_rewrites.txt.IR2ISA_REWRITE_RULES.rule.txt",
+-            kebab_name=kebab_name,
+-            padding=padding,
+-            lhs_pattern="(?fallback)",
+-            rhs=f"({kebab_name} ?args)"
+-        )
+-
+-    # Generate RHS with or without _? suffix
+-    rhs = f"({kebab_name}_? {' '.join(parameter_vars)})" if metadata.has_comp_attrs else f"({kebab_name} {' '.join(parameter_vars)})"
+-
+-    # Calculate padding to align the '=>' at column 20
+-    padding = ' ' * (19 - len(kebab_name))
+-
+-    return templates.render(
+-        "ir2isa_rewrites.txt.IR2ISA_REWRITE_RULES.rule.txt",
+-        kebab_name=kebab_name,
+-        padding=padding,
+-        lhs_pattern=lhs_pattern,
+-        rhs=rhs
+-    )
+-
+-
+-def generate_ir2isa_rewrites_txt_file(backend_gen_dir: str, instruction_metadata_list):
+-    """Template ir2isa_rewrites.txt from generic file"""
+-    templates = get_backend_template_loader()
+-
+-    # Read generic file
+-    rewrites_file = os.path.join(backend_gen_dir, 'src', 'isel', 'rewrites', 'ir2isa_rewrites.txt')
+-    with open(rewrites_file, 'r') as f:
+-        content = f.read()
+-
+-    # Generate all rewrite rules
+-    rules = []
+-    for metadata in instruction_metadata_list:
+-        rule = generate_rewrite_rule(metadata, templates)
+-        rules.append(rule)
+-
+-    # Join rules with newlines
+-    all_rules = '\n'.join(rules)
++    semantics = lower_semantics(metadata)
++    name = metadata.name.replace("_", "-")
++    rhs = name + ("_?" if metadata.has_comp_attrs else "")
++    return f"{name}: {semantics.match_pattern} => ({rhs}{' ' if semantics.parameters else ''}{' '.join(semantics.parameters)})"
+ 
+-    # Replace placeholder
+-    content = content.replace('{{IR2ISA_REWRITE_RULES}}', all_rules)
+ 
+-    # Write back
+-    with open(rewrites_file, 'w') as f:
+-        f.write(content)
++def generate_ir2isa_rewrites_txt_file(backend_gen_dir, instruction_metadata_list):
++    path = Path(backend_gen_dir) / "src/isel/rewrites/ir2isa_rewrites.txt"
++    rules = "\n".join(generate_rewrite_rule(metadata, None) for metadata in instruction_metadata_list)
++    path.write_text(path.read_text().replace("{{IR2ISA_REWRITE_RULES}}", rules))
+diff --git a/act_backend/semantics.py b/act_backend/semantics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..025eeaf5fd161b4ad04fc529c3f979d10411cebd
+--- /dev/null
++++ b/act_backend/semantics.py
+@@ -0,0 +1,160 @@
++"""One semantic DAG lowering for scalar and ordered multi-result instructions."""
++import ast
++from dataclasses import dataclass
++import re
++from taidl.semantics import semantic_interface, tensor_type
++
++OP_MAP = {
++    "reshape": "reshape_?", "convert": "convert_?", "slice": "slice_?",
++    "transpose": "transpose_?", "broadcast": "broadcast_?",
++    "concatenate": "concat_?", "concat": "concat_?", "constant": "constant_?",
++    "eye": "eye_?", "bitcast_convert": "bitcvt", "reduce_add": "reduce_?",
++    "shift_left": "shift-left", "shift_right_logical": "shift-right-logical",
++}
++
++
++def dimension(text):
++    """Return (attribute, coefficient, constant) for an affine dimension.
++
++    Infer an attribute from any matching tensor, then validate every occurrence.
++    Nonlinear/ambiguous expressions fail generation instead of guessing values.
++    """
++    tree = ast.parse(re.sub(r"@c\.(\w+)", r"\1", text.replace("`", "")), mode="eval").body
++    def read(node):
++        if isinstance(node, ast.Constant) and type(node.value) is int:
++            return None, 0, node.value
++        if isinstance(node, ast.Name):
++            return node.id, 1, 0
++        if isinstance(node, ast.BinOp):
++            a, x, c = read(node.left)
++            b, y, d = read(node.right)
++            if isinstance(node.op, ast.Mult) and (a is None or b is None):
++                return (b, c * y, c * d) if a is None else (a, d * x, d * c)
++            if isinstance(node.op, (ast.Add, ast.Sub)) and (a is None or b is None or a == b):
++                sign = -1 if isinstance(node.op, ast.Sub) else 1
++                return a or b, x + sign * y, c + sign * d
++        raise ValueError(f"Unsupported dimension expression: {text}")
++    attr, factor, offset = read(tree)
++    if (attr and factor == 0) or (not attr and offset < 0):
++        raise ValueError(f"Invalid dimension expression: {text}")
++    return attr, factor, offset
++
++
++@dataclass
++class Node:
++    token: str
++    children: list
++    dtype: str
++    shape: list
++    operation: str
++    attrs: dict
++
++
++@dataclass
++class Semantics:
++    pattern: str
++    parameters: list
++    postorder: list
++    parts: list
++    results: list
++    attributes: list
++    match_pattern: str
++    match_parts: list
++
++
++def lower_semantics(metadata):
++    interface = semantic_interface(metadata.semantics_ast, input_count=metadata.rhs_size - 1)
++    declarations, parameters = {}, {}
++    multiple = len(interface.results) > 1
++    for ctx in metadata.semantics_ast.instruction():
++        # The ROOT tuple declares result order; its tensor operands are already
++        # nodes in this DAG. It is not a tensor computation with a fake shape.
++        if ctx.OPERATION().getText() == "tuple":
++            continue
++        name = ctx.IDENTIFIER().getText()
++        if name in declarations:
++            raise ValueError(f"Repeated semantics symbol: {name}")
++        dtype, declared_shape = tensor_type(ctx.result_type())
++        dimensions = list(declared_shape)
++        for part in dimensions:
++            dimension(part)
++        op = ctx.OPERATION().getText()
++        operands = [o.value().getText() for o in ctx.operands().operand()] if ctx.operands() else []
++        attrs = {}
++        if ctx.attributes():
++            for item in ctx.attributes().attribute():
++                key = item.IDENTIFIER().getText()
++                if key in attrs:
++                    raise ValueError(f"Repeated semantics attribute: {key}")
++                attrs[key] = item.attributeValue().getText()
++        if op == "parameter":
++            if len(operands) != 1 or not operands[0].isdigit():
++                raise ValueError("Invalid semantics parameter")
++            index = int(operands[0])
++            if index in parameters:
++                raise ValueError("Repeated semantics parameter number")
++            token = parameters[index] = (f"?p{index}" if multiple or index >= 26
++                                         else "?" + chr(ord("a") + index))
++            children = []
++        else:
++            arities = {"add": 2, "bitcast_convert": 1, "broadcast": 1,
++                       "concatenate": 2, "concat": 2, "convert": 1, "copy": 1,
++                       "divide": 2, "dot": 2, "exponential": 1, "multiply": 2,
++                       "or": 2, "reduce_add": 1, "reshape": 1,
++                       "shift_left": 2, "shift_right_logical": 2,
++                       "transpose": 1, "xor": 2}
++            if op not in arities or len(operands) != arities[op]:
++                raise ValueError(f"Unsupported TensorOp operation/arity: {op}/{len(operands)}")
++            if op in ("broadcast", "transpose", "concatenate", "concat", "reduce_add") and "dimensions" not in attrs:
++                raise ValueError(f"{op} requires dimensions")
++            children = []
++            for operand in operands:
++                if operand not in declarations:
++                    raise ValueError(f"Undefined semantics operand: {operand}")
++                children.append(declarations[operand])
++            token = OP_MAP.get(op, op)
++        if op == "dot":
++            if attrs != {"lhs_contracting_dims": "{1}", "rhs_contracting_dims": "{0}"}:
++                raise ValueError("dot requires the standard matrix product represented by OpDot")
++        elif attrs and not (op in ("broadcast", "transpose", "concatenate", "concat", "reduce_add")
++                            and set(attrs) == {"dimensions"}):
++            raise ValueError(f"Unsupported semantics attributes on {op}: {attrs}")
++        node = Node(token, children, dtype, dimensions, op, attrs)
++        declarations[name] = node
++    if sorted(parameters) != list(range(metadata.rhs_size - 1)):
++        raise ValueError("Semantics parameters must match the declared ISA inputs")
++    ordered = [declarations[result.IDENTIFIER().getText()] for result in interface.results]
++    postorder, used = [], set()
++    def pattern(node):
++        parts = [pattern(child) for child in node.children]
++        postorder.append(node)
++        if node.token.startswith("?"):
++            used.add(node.token)
++            return node.token
++        return "(" + node.token + (" " if parts else "") + " ".join(parts) + ")"
++    parts = [pattern(node) for node in ordered]
++    if used != set(parameters.values()):
++        raise ValueError("Every declared ISA input must contribute to an output")
++    inferred = sorted({dimension(d)[0] for node in postorder for d in node.shape if dimension(d)[0]})
++    attributes = list(getattr(metadata, "comp_attrs", None) or inferred)
++    if metadata.has_comp_attrs and not attributes:
++        raise ValueError("Computation attributes must be inferable from tensor dimensions")
++    if set(attributes) != set(inferred):
++        raise ValueError("Declared computation attributes must match inferable shape attributes")
++    lhs = parts[0] if len(parts) == 1 else "(tuple " + " ".join(parts) + ")"
++    # Egg uses exact lookup when every variable below an operator is already
++    # bound. That shortcut cannot look up ACT's metadata-wildcard operators
++    # (broadcast_?, reshape_?, ...). Fresh occurrence variables avoid it;
++    # preconditions below enforce the original shared-value equalities.
++    occurrences = {}
++    def matcher(node):
++        if node.token.startswith("?"):
++            count = occurrences.get(node.token, 0)
++            occurrences[node.token] = count + 1
++            return node.token if count == 0 else f"{node.token}__use{count}"
++        children = [matcher(child) for child in node.children]
++        return "(" + node.token + (" " if children else "") + " ".join(children) + ")"
++    match_parts = [matcher(node) for node in ordered]
++    match_pattern = match_parts[0] if len(parts) == 1 else "(tuple " + " ".join(match_parts) + ")"
++    return Semantics(lhs, [parameters[i] for i in sorted(parameters)], postorder, parts,
++                     ordered, attributes, match_pattern, match_parts)

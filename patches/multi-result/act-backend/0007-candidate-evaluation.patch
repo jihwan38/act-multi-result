@@ -1,0 +1,159 @@
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+index 92fc6e8283c0880d3b56109594e0e9782dd3769b..bb7ac530db7601f6f2184eda6c613ea729d6cfa5 100644
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -67,15 +67,27 @@ fn publish_assembly(path: &PathBuf, output_path: &PathBuf) {
+     ).expect("Failed to publish allocation evidence");
+ }
+ 
+-fn check_termination(best: Option<AsmCandidate>, start: &Instant, output_path: &PathBuf) {
++fn stalled(elapsed: Duration, improved_at: Duration, pending: usize) -> bool {
++    pending == 0 && elapsed > improved_at * SATURATION_FACTOR
++}
++
++fn check_termination(
++    best: Option<AsmCandidate>, start: &Instant, output_path: &PathBuf, pending: usize,
++) {
+     let current_time = start.elapsed();
++    // A returned batch is still subject to the overall compilation deadline.
++    // Only the no-improvement heuristic waits until its candidates are evaluated.
++    if current_time >= TIME_LIMIT {
++        println!("Unevaluated PII candidates in current batch: {}", pending);
++        timeout(best, start, output_path);
++    }
+     match best {
+         Some(AsmCandidate {
+             path,
+             cost,
+             timestamp,
+         }) => {
+-            if current_time > timestamp * SATURATION_FACTOR {
++            if stalled(current_time, timestamp, pending) {
+                 println!(
+                     "No improvement for last {:?}, stopping",
+                     current_time - timestamp
+@@ -95,7 +107,8 @@ fn check_termination(best: Option<AsmCandidate>, start: &Instant, output_path: &
+                 println!(
+                     "Current elapsed: {:?} | Will stop at {:?} if no progress",
+                     current_time,
+-                    min(timestamp * SATURATION_FACTOR, TIME_LIMIT)
++                    if pending == 0 { min(timestamp * SATURATION_FACTOR, TIME_LIMIT) }
++                    else { TIME_LIMIT }
+                 );
+             }
+         }
+@@ -108,9 +121,9 @@ fn check_termination(best: Option<AsmCandidate>, start: &Instant, output_path: &
+     }
+ }
+ 
+-fn timeout(best: Option<AsmCandidate>, start: &Instant, output_path: &PathBuf) {
++fn timeout(best: Option<AsmCandidate>, start: &Instant, output_path: &PathBuf) -> ! {
+     let current_time = start.elapsed();
+-    if current_time > TIME_LIMIT {
++    if current_time >= TIME_LIMIT {
+         println!("Reached overall time limit of {:?}, stopping", TIME_LIMIT);
+         println!();
+         println!("Total time: {:?}", current_time);
+@@ -282,11 +295,11 @@ fn main() {
+     // Start processing the input file
+     let start = Instant::now();
+ 
+-    check_termination(best.borrow().clone(), &start, &output_path);
++    check_termination(best.borrow().clone(), &start, &output_path, 0);
+     println!("Starting Phase 1: Instruction Selection...");
+     println!();
+ 
+-    check_termination(best.borrow().clone(), &start, &output_path);
++    check_termination(best.borrow().clone(), &start, &output_path, 0);
+     println!("Starting Phase 1 Module 1: E-Graph Initializer...");
+     println!();
+ 
+@@ -354,7 +367,7 @@ fn main() {
+             .with_hook(move |runner| {
+                 PROCESSED.lock().unwrap().clear();
+                 if runner.iterations.len() % N == 0 && runner.iterations.len() > 0 {
+-                    check_termination(best.borrow().clone(), &start, &output_path_for_hook);
++                    check_termination(best.borrow().clone(), &start, &output_path_for_hook, 0);
+                     println!(
+                         "Starting Phase 1 Module 3: Graph Extractor (limit {})",
+                         limit
+@@ -370,8 +383,10 @@ fn main() {
+                     );
+                     limit += 1; // Increment limit to allow for more extraction next time
+ 
+-                    for pii in piis {
+-                        check_termination(best.borrow().clone(), &start, &output_path_for_hook);
++                    let batch_size = piis.len();
++                    println!("PII batch: extracted={}, evaluated=0, pending={}", batch_size, batch_size);
++                    for (index, pii) in piis.into_iter().enumerate() {
++                        check_termination(best.borrow().clone(), &start, &output_path_for_hook, batch_size - index);
+                         println!("Starting Phase 2 for PII #{}", *pii_counter.borrow());
+                         println!();
+ 
+@@ -391,12 +406,13 @@ fn main() {
+                         *pii_counter.borrow_mut() += 1;
+                     }
+ 
+-                    check_termination(best.borrow().clone(), &start, &output_path_for_hook);
++                    println!("PII batch: extracted={}, evaluated={}, pending=0", batch_size, batch_size);
++                    check_termination(best.borrow().clone(), &start, &output_path_for_hook, 0);
+                     println!("Completed Phase 2: Memory Allocation, returning to Phase 1: Instruction Selection");
+                     println!();
+                 }
+ 
+-                check_termination(best.borrow().clone(), &start, &output_path_for_hook);
++                check_termination(best.borrow().clone(), &start, &output_path_for_hook, 0);
+                 println!(
+                     "Starting Phase 1 Module 2: Rewrite Applier (iteration {})",
+                     runner.iterations.len() + 1
+@@ -425,7 +441,7 @@ fn main() {
+             println!();
+ 
+             while start.elapsed() < TIME_LIMIT {
+-                check_termination(best.borrow().clone(), &start, &output_path);
++                check_termination(best.borrow().clone(), &start, &output_path, 0);
+                 println!(
+                     "Starting Phase 1 Module 3: Graph Extractor (limit {})",
+                     limit
+@@ -441,8 +457,10 @@ fn main() {
+                 );
+                 limit += 1; // Increment limit to allow for more extraction next time
+ 
+-                for pii in piis {
+-                    check_termination(best.borrow().clone(), &start, &output_path);
++                let batch_size = piis.len();
++                println!("PII batch: extracted={}, evaluated=0, pending={}", batch_size, batch_size);
++                for (index, pii) in piis.into_iter().enumerate() {
++                    check_termination(best.borrow().clone(), &start, &output_path, batch_size - index);
+                     println!("Starting Phase 2 for PII #{}", *pii_counter.borrow());
+                     println!();
+ 
+@@ -459,7 +477,8 @@ fn main() {
+                     *pii_counter.borrow_mut() += 1;
+                 }
+ 
+-                check_termination(best.borrow().clone(), &start, &output_path);
++                println!("PII batch: extracted={}, evaluated={}, pending=0", batch_size, batch_size);
++                check_termination(best.borrow().clone(), &start, &output_path, 0);
+                 println!("Completed Phase 2: Memory Allocation, returning to Phase 1: Instruction Selection");
+                 println!();
+ 
+@@ -479,3 +498,18 @@ fn main() {
+ 
+     timeout(best.borrow().clone(), &start, &output_path);
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn pending_candidates_defer_only_the_stall_heuristic() {
++        let improved = Duration::from_millis(100);
++        let elapsed = Duration::from_millis(250);
++        assert!(!stalled(elapsed, improved, 77));
++        assert!(stalled(elapsed, improved, 0));
++        assert!(!stalled(Duration::from_millis(150), improved, 0));
++        assert_eq!(TIME_LIMIT, Duration::from_secs(10));
++    }
++}

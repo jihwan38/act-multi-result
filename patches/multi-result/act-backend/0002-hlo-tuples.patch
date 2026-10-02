@@ -1,0 +1,998 @@
+diff --git a/act_backend/generic/src/ir/metadata.rs b/act_backend/generic/src/ir/metadata.rs
+index 63fd7435a8d3adb7813ca045a47c5de6c215dec9..03a309821e27556ec0050a3caa38e484c3977e0f 100644
+--- a/act_backend/generic/src/ir/metadata.rs
++++ b/act_backend/generic/src/ir/metadata.rs
+@@ -2,6 +2,15 @@ use std::fs::File;
+ use std::io::Write;
+ 
+ use crate::ir::dtype::Dtype;
++use crate::ir::value::ValueTree;
++
++/// One program output's byte-view e-class and required HBM address.
++/// This is an ABI binding, not the identity or type of a logical tuple.
++#[derive(Debug, Clone, Copy)]
++pub struct OutputRoot {
++    pub eclass: egg::Id,
++    pub hbm_offset: i32,
++}
+ 
+ #[derive(Debug, Clone, serde::Serialize)]
+ pub struct MetaDataInfo {
+@@ -15,6 +24,8 @@ pub struct MetaData {
+     pub module_name: String,
+     pub input: Vec<MetaDataInfo>,
+     pub output: Vec<MetaDataInfo>,
++    pub input_tree: Vec<ValueTree>,
++    pub output_tree: ValueTree,
+ }
+ 
+ impl MetaData {
+@@ -31,6 +42,8 @@ impl Default for MetaData {
+             module_name: "xla_computation_unknown".to_string(),
+             input: vec![],
+             output: vec![],
++            input_tree: vec![],
++            output_tree: ValueTree::Tuple(vec![]),
+         }
+     }
+ }
+diff --git a/act_backend/generic/src/ir/mod.rs b/act_backend/generic/src/ir/mod.rs
+index 0557e10b5500b41cff91c36dfa5bf69539ecf5ab..1ad1908c19c201e0e05e62e4c95061fa4f5a8683 100644
+--- a/act_backend/generic/src/ir/mod.rs
++++ b/act_backend/generic/src/ir/mod.rs
+@@ -3,3 +3,4 @@ pub mod dtype;
+ pub mod egraph;
+ pub mod metadata;
+ pub mod pii;
++pub mod value;
+diff --git a/act_backend/generic/src/ir/value.rs b/act_backend/generic/src/ir/value.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d6fd93960c4853030a734247ea038cf0015dce62
+--- /dev/null
++++ b/act_backend/generic/src/ir/value.rs
+@@ -0,0 +1,75 @@
++//! Logical tuple structure is independent of the flat physical tensor ABI.
++use crate::ir::dtype::Dtype;
++
++#[derive(Debug, Clone, PartialEq)]
++pub struct TensorType {
++    pub dtype: Dtype,
++    pub shape: Vec<i32>,
++    pub tile: String,
++}
++
++impl TensorType {
++    pub fn shape_text(&self) -> String {
++        self.shape
++            .iter()
++            .map(ToString::to_string)
++            .collect::<Vec<_>>()
++            .join(",")
++    }
++
++    pub fn bytes(&self) -> i32 {
++        self.shape
++            .iter()
++            .try_fold(self.dtype.size_in_bytes(), |bytes, &dim| {
++                assert!(dim >= 0, "Negative tensor dimension");
++                bytes.checked_mul(dim)
++            })
++            .expect("Tensor byte size exceeds ACT address range")
++    }
++}
++
++#[derive(Debug, Clone, PartialEq)]
++pub enum ValueType {
++    Tensor(TensorType),
++    Tuple(Vec<ValueType>),
++}
++
++/// Leaf indices are in depth-first ABI order; [] denotes a genuine empty tuple.
++#[derive(Debug, Clone, PartialEq, serde::Serialize)]
++#[serde(untagged)]
++pub enum ValueTree {
++    Leaf(usize),
++    Tuple(Vec<ValueTree>),
++}
++
++impl ValueType {
++    pub fn leaves(&self) -> Vec<&TensorType> {
++        match self {
++            Self::Tensor(tensor) => vec![tensor],
++            Self::Tuple(elements) => elements.iter().flat_map(Self::leaves).collect(),
++        }
++    }
++
++    pub fn tree(&self, next: &mut usize) -> ValueTree {
++        match self {
++            Self::Tensor(_) => {
++                let index = *next;
++                *next += 1;
++                ValueTree::Leaf(index)
++            }
++            Self::Tuple(elements) => {
++                ValueTree::Tuple(elements.iter().map(|ty| ty.tree(next)).collect())
++            }
++        }
++    }
++
++    pub fn same_type(&self, other: &Self) -> bool {
++        match (self, other) {
++            (Self::Tensor(a), Self::Tensor(b)) => a.dtype == b.dtype && a.shape == b.shape,
++            (Self::Tuple(a), Self::Tuple(b)) => {
++                a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.same_type(b))
++            }
++            _ => false,
++        }
++    }
++}
+diff --git a/act_backend/generic/src/isel/extractor/utils.rs b/act_backend/generic/src/isel/extractor/utils.rs
+index 440743c092872a352e3c3041fbfe15a99febe51e..c9fd396d4e1d33c118d6dd86408ee69fb764bc5b 100644
+--- a/act_backend/generic/src/isel/extractor/utils.rs
++++ b/act_backend/generic/src/isel/extractor/utils.rs
+@@ -25,6 +25,12 @@ pub fn detect_constants(
+         if constants.contains(&eclass) {
+             continue;
+         }
++        // A tuple is a structured value, not a byte tensor for DetectedConst.
++        // Its tensor elements may still be folded independently, wherever the
++        // tuple occurs (including intermediate and unused tuple expressions).
++        if egraph[eclass].nodes.iter().any(|en| matches!(en, TensorOp::OpTuple(_))) {
++            continue;
++        }
+ 
+         for en in egraph[eclass].nodes.iter() {
+             if en
+diff --git a/act_backend/generic/src/isel/initializer/lib.rs b/act_backend/generic/src/isel/initializer/lib.rs
+index 9cef9d14f70a4033a64be9260922cefc05851558..438a27da3d512a37350014dc024f2efb6c9d8d99 100644
+--- a/act_backend/generic/src/isel/initializer/lib.rs
++++ b/act_backend/generic/src/isel/initializer/lib.rs
+@@ -8,8 +8,9 @@ use std::path::Path;
+ use egg::{EGraph, Id};
+ 
+ use crate::ir::dtype::Dtype;
+-use crate::ir::egraph::{TensorInfo, TensorOp};
+-use crate::ir::metadata::{MetaData, MetaDataInfo};
++use crate::ir::egraph::{tuple_elements, TensorInfo, TensorOp};
++use crate::ir::metadata::{MetaData, MetaDataInfo, OutputRoot};
++use crate::ir::value::ValueType;
+ use crate::isel::initializer::parser::HLOExpr;
+ 
+ use crate::isel::initializer::parser::{
+@@ -45,6 +46,7 @@ pub fn parse_hlo_module_to_egraph<P: AsRef<Path>>(
+         Id,
+         HashSet<Id>,
+         MetaData,
++        Vec<OutputRoot>,
+     ),
+     io::Error,
+ > {
+@@ -70,25 +72,45 @@ pub fn parse_hlo_module_to_egraph<P: AsRef<Path>>(
+         // For now, we just store the regions - they'll be used when referenced in reduce operations
+         let _regions = regions; // Store regions for future use
+ 
+-        // Process entry instructions
+-        let mut root: Option<Id> = None;
++        // Construct every logical value first. Binding the ABI is a separate step.
++        let mut logical_root = None;
++        let mut root_type = None;
++        let mut parameters = HashSet::new();
+         for instruction in entry_instructions {
++            if let HLOExpr::Parameter { tidx, value_type, .. } = &instruction.expr {
++                let index = *tidx as usize;
++                assert!(parameters.insert(index), "Duplicate parameter index: {}", index);
++                let declared = header.input_types.get(index).expect("Parameter index outside module header");
++                assert!(declared.same_type(value_type), "Parameter type differs from module header");
++            }
+             add_expr_to_egraph(
+-                &instruction.expr,
+-                &mut egraph,
+-                &mut inputs,
+-                &mut table,
+-                &mut offsets,
+-                &mut root,
+-                instruction.is_root,
++                &instruction.expr, &mut egraph, &mut inputs, &mut table,
++                &mut offsets, &header.input_types,
+             );
++            if instruction.is_root {
++                assert!(header.output_type.same_type(&instruction.value_type),
++                    "ROOT type differs from module header");
++                logical_root = table.get(&instruction.symbol).copied();
++                root_type = Some(instruction.value_type);
++            }
+         }
+-
+-        if let Some(last) = offsets.last_mut() {
+-            last.0 = root;
+-        }
+-
+-        Ok((egraph, offsets, root.unwrap(), inputs, metadata))
++        assert_eq!(parameters.len(), header.input_types.len(), "Missing ENTRY parameter");
++        let logical_root = logical_root.expect("Missing program root");
++        let root_type = root_type.unwrap();
++        validate_value(&egraph, logical_root, &root_type);
++        let mut leaves = vec![];
++        bind_output_leaves(logical_root, &root_type, &mut egraph, &mut leaves);
++        assert_eq!(leaves.len(), metadata.output.len());
++        let output_start = offsets.len() - leaves.len();
++        let outputs = leaves.iter().zip(&metadata.output).enumerate().map(|(index, (&id, info))| {
++            offsets[output_start + index].0 = Some(id);
++            OutputRoot { eclass: id, hbm_offset: info.addr }
++        }).collect();
++        let root = match root_type {
++            ValueType::Tensor(_) => leaves[0],
++            ValueType::Tuple(_) => logical_root,
++        };
++        Ok((egraph, offsets, root, inputs, metadata, outputs))
+     } else {
+         panic!("Failed to parse HLO module with regions");
+     }
+@@ -112,37 +134,20 @@ fn fill_offsets_from_header(
+     metadata: &mut MetaData,
+ ) {
+     metadata.module_name = header.module_name.clone();
+-
+-    let mut curr_bytes: i32 = 0;
+-    for shape in header.input_types.iter() {
+-        let (ttype, tshape, _ttile) = parse_type_shape(shape);
+-        let dtype: Dtype = ttype.as_str().into();
+-        let shape_vec = shape_to_vec(&tshape);
+-
+-        let mut bytes: i32 = dtype.size_in_bytes();
+-        shape_vec.iter().for_each(|dim| bytes *= dim);
+-
+-        offsets.push((None, curr_bytes));
+-        metadata.input.push(MetaDataInfo {
+-            addr: curr_bytes,
+-            shape: shape_vec,
+-            dtype: dtype,
+-        });
+-
+-        curr_bytes += bytes;
++    let mut next = 0;
++    metadata.input_tree = header.input_types.iter().map(|ty| ty.tree(&mut next)).collect();
++    metadata.output_tree = header.output_type.tree(&mut 0);
++    let mut address = 0i32;
++    for (types, destination) in [
++        (header.input_types.iter().flat_map(ValueType::leaves).collect::<Vec<_>>(), &mut metadata.input),
++        (header.output_type.leaves(), &mut metadata.output),
++    ] {
++        for tensor in types {
++            offsets.push((None, address));
++            destination.push(MetaDataInfo { addr: address, shape: tensor.shape.clone(), dtype: tensor.dtype });
++            address = address.checked_add(tensor.bytes()).expect("HBM layout exceeds ACT address range");
++        }
+     }
+-
+-    let output_shape = &header.output_type;
+-    let (ttype, tshape, _ttile) = parse_type_shape(output_shape);
+-    let dtype: Dtype = ttype.as_str().into();
+-    let shape_vec = shape_to_vec(&tshape);
+-
+-    offsets.push((None, curr_bytes));
+-    metadata.output.push(MetaDataInfo {
+-        addr: curr_bytes,
+-        shape: shape_vec.clone(),
+-        dtype: dtype,
+-    });
+ }
+ 
+ fn add_expr_to_egraph(
+@@ -151,27 +156,13 @@ fn add_expr_to_egraph(
+     inputs: &mut HashSet<Id>,
+     table: &mut EggSymbolTable,
+     offsets: &mut Vec<(Option<Id>, i32)>,
+-    root: &mut Option<Id>,
+-    parsing_root: bool,
++    input_types: &[ValueType],
+ ) {
+     match expr {
+-        HLOExpr::Parameter {
+-            tsymbol,
+-            tshape,
+-            ttile,
+-            ttype,
+-            tidx,
+-        } => {
+-            if offsets[tidx.clone() as usize].0.is_none() {
+-                offsets[tidx.clone() as usize].0 = Some(add_parameter(
+-                    tsymbol, tshape, ttile, ttype, egraph, inputs, table,
+-                ));
+-            } else {
+-                panic!("Duplicate parameter index: {}", tidx);
+-            }
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
++        HLOExpr::Parameter { tsymbol, value_type, tidx } => {
++            let mut slot = input_types[..*tidx as usize].iter().map(|ty| ty.leaves().len()).sum();
++            let node = add_parameter_value(tsymbol, value_type, egraph, inputs, offsets, &mut slot);
++            table.insert(tsymbol.clone(), node);
+         }
+ 
+         HLOExpr::Constant {
+@@ -181,9 +172,6 @@ fn add_expr_to_egraph(
+             value,
+         } => {
+             add_constant(tsymbol, ttype, tshape, value, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, "", egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::Broadcast {
+@@ -195,9 +183,6 @@ fn add_expr_to_egraph(
+             dimensions,
+         } => {
+             add_broadcast(tsymbol, ttype, tshape, source, dimensions, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::BinaryOp {
+@@ -210,9 +195,22 @@ fn add_expr_to_egraph(
+             rhs,
+         } => {
+             add_binary_op(tsymbol, ttype, tshape, op_name, lhs, rhs, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
++        }
++
++        HLOExpr::Tuple {
++            tsymbol,
++            element_types,
++            operands,
++        } => {
++            add_tuple(tsymbol, element_types, operands, egraph, table);
++        }
++
++        HLOExpr::GetTupleElement { tsymbol, value_type, source, index } => {
++            let tuple = *table.get(source)
++                .unwrap_or_else(|| panic!("Undefined tuple operand: {}", source));
++            let node = add_tuple_projection(egraph, tuple, *index);
++            validate_value(egraph, node, value_type);
++            table.insert(tsymbol.clone(), node);
+         }
+ 
+         HLOExpr::Slice {
+@@ -224,9 +222,6 @@ fn add_expr_to_egraph(
+             slices,
+         } => {
+             add_slice(tsymbol, ttype, tshape, source, slices, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::Concatenate {
+@@ -238,9 +233,6 @@ fn add_expr_to_egraph(
+             dimensions,
+         } => {
+             add_concatenate(tsymbol, ttype, tshape, tinputs, dimensions, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::Reshape {
+@@ -251,9 +243,6 @@ fn add_expr_to_egraph(
+             source,
+         } => {
+             add_reshape(tsymbol, ttype, tshape, source, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::Transpose {
+@@ -265,9 +254,6 @@ fn add_expr_to_egraph(
+             dimensions,
+         } => {
+             add_transpose(tsymbol, ttype, tshape, source, dimensions, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::Convert {
+@@ -278,9 +264,6 @@ fn add_expr_to_egraph(
+             source,
+         } => {
+             add_convert(tsymbol, ttype, tshape, source, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::ReduceSum {
+@@ -297,9 +280,6 @@ fn add_expr_to_egraph(
+                 tsymbol, ttype, tshape, ttile, source, constant, dimensions, to_apply, egraph,
+                 table,
+             );
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
+-            }
+         }
+ 
+         HLOExpr::Exponential {
+@@ -310,8 +290,89 @@ fn add_expr_to_egraph(
+             source,
+         } => {
+             add_exponential(tsymbol, ttype, tshape, ttile, source, egraph, table);
+-            if parsing_root {
+-                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
++        }
++    }
++}
++
++fn validate_value(egraph: &EGraph<TensorOp, TensorInfo>, id: Id, expected: &ValueType) {
++    match expected {
++        ValueType::Tuple(types) => {
++            let children = tuple_elements(egraph, id).expect("Expected tuple operand");
++            assert_eq!(children.len(), types.len(), "Tuple operand arity mismatch");
++            for (&child, ty) in children.iter().zip(types) {
++                validate_value(egraph, child, ty);
++            }
++        }
++        ValueType::Tensor(ty) => {
++            assert!(tuple_elements(egraph, id).is_none(), "Expected tensor operand, found tuple");
++            assert_eq!(egraph[id].data.dtype, ty.dtype, "Tuple/GTE tensor dtype mismatch");
++            assert_eq!(egraph[id].data.shape, ty.shape, "Tuple/GTE tensor shape mismatch");
++        }
++    }
++}
++
++fn add_parameter_value(
++    symbol: &str, ty: &ValueType, egraph: &mut EGraph<TensorOp, TensorInfo>,
++    inputs: &mut HashSet<Id>, offsets: &mut [(Option<Id>, i32)], slot: &mut usize,
++) -> Id {
++    match ty {
++        ValueType::Tuple(elements) => {
++            let children = elements.iter().enumerate().map(|(index, ty)| {
++                add_parameter_value(&format!("{}#{}", symbol, index), ty, egraph, inputs, offsets, slot)
++            }).collect();
++            egraph.add(TensorOp::OpTuple(children))
++        }
++        ValueType::Tensor(ty) => {
++            let mut leaf_table = EggSymbolTable::default();
++            let raw = add_parameter(symbol, &ty.shape_text(), &ty.tile, &ty.dtype.to_string(),
++                egraph, inputs, &mut leaf_table);
++            // The input ABI binds the raw HBM Var, not its logical typed view.
++            assert!(offsets[*slot].0.is_none(), "Duplicate input ABI slot");
++            offsets[*slot].0 = Some(raw);
++            *slot += 1;
++            leaf_table[symbol]
++        }
++    }
++}
++
++fn add_tuple(
++    tsymbol: &str, element_types: &[ValueType], operands: &[String],
++    egraph: &mut EGraph<TensorOp, TensorInfo>, table: &mut EggSymbolTable,
++) -> Id {
++    assert_eq!(element_types.len(), operands.len());
++    let children = operands.iter().zip(element_types).map(|(operand, ty)| {
++        let id = *table.get(operand).unwrap_or_else(|| panic!("Undefined tuple operand: {}", operand));
++        validate_value(egraph, id, ty);
++        id
++    }).collect();
++    let node = egraph.add(TensorOp::OpTuple(children));
++    table.insert(tsymbol.to_string(), node);
++    node
++}
++
++fn add_tuple_projection(egraph: &mut EGraph<TensorOp, TensorInfo>, tuple: Id, index: usize) -> Id {
++    let elements = tuple_elements(egraph, tuple).expect("GTE operand must be a tuple");
++    let element = *elements.get(index).expect("GTE index out of bounds");
++    let node = egraph.add(TensorOp::OpGetTupleElement(index, [tuple]));
++    // Aggregate types are recovered through tuple/projection edges. Never
++    // interpret their default tensor-analysis slot as a physical tensor.
++    if tuple_elements(egraph, element).is_none() {
++        egraph.set_analysis_data(node, egraph[element].data.clone());
++    }
++    node
++}
++
++fn bind_output_leaves(
++    value: Id, ty: &ValueType, egraph: &mut EGraph<TensorOp, TensorInfo>, leaves: &mut Vec<Id>,
++) {
++    match ty {
++        ValueType::Tensor(ty) => {
++            leaves.push(add_hbm_output(value, &ty.dtype.to_string(), &ty.shape_text(), &ty.tile, egraph));
++        }
++        ValueType::Tuple(elements) => {
++            for (index, ty) in elements.iter().enumerate() {
++                let projected = add_tuple_projection(egraph, value, index);
++                bind_output_leaves(projected, ty, egraph, leaves);
+             }
+         }
+     }
+@@ -766,15 +827,13 @@ fn add_exponential(
+     table.insert(tsymbol.to_string(), node);
+ }
+ 
+-fn add_root_operations(
+-    tsymbol: &str,
++fn add_hbm_output(
++    value: Id,
+     ttype: &str,
+     tshape: &str,
+     ttile: &str,
+     egraph: &mut EGraph<TensorOp, TensorInfo>,
+-    table: &mut EggSymbolTable,
+-    root: &mut Option<Id>,
+-) {
++) -> Id {
+     let dtype: Dtype = ttype.into();
+     let dtype_size = dtype.size_in_bytes();
+     let bytes = get_bytes(tshape, dtype_size);
+@@ -788,9 +847,7 @@ fn add_root_operations(
+             shape_with_size.push_str(&dtype_size.to_string());
+         }
+ 
+-        let node = table.get(tsymbol);
+-
+-        let node = egraph.add(TensorOp::OpBitcvt([*node.unwrap()]));
++        let node = egraph.add(TensorOp::OpBitcvt([value]));
+         let bitcvt_vec = shape_to_vec(&shape_with_size);
+         egraph.set_analysis_data(
+             node,
+@@ -811,13 +868,11 @@ fn add_root_operations(
+             },
+         );
+ 
+-        // Output storage must not replace the logical value seen by later users.
+-        *root = Some(node);
++        node
+     } else {
+-        let node = table.get(tsymbol);
+         let tiled_shape = get_result_shape(tshape, ttile);
+ 
+-        let node = egraph.add(TensorOp::OpReshape(tiled_shape.clone(), [*node.unwrap()]));
++        let node = egraph.add(TensorOp::OpReshape(tiled_shape.clone(), [value]));
+         let reshape_vec = shape_to_vec(&tiled_shape);
+         egraph.set_analysis_data(
+             node,
+@@ -870,8 +925,7 @@ fn add_root_operations(
+             },
+         );
+ 
+-        // Output storage must not replace the logical value seen by later users.
+-        *root = Some(node);
++        node
+     }
+ }
+ 
+diff --git a/act_backend/generic/src/isel/initializer/parser.rs b/act_backend/generic/src/isel/initializer/parser.rs
+index 36e7237135f817ee3d85bd553f13f429774f1886..0233b2c4a1eb9f031744b769ecfb609742189a04 100644
+--- a/act_backend/generic/src/isel/initializer/parser.rs
++++ b/act_backend/generic/src/isel/initializer/parser.rs
+@@ -1,3 +1,5 @@
++use crate::ir::value::{TensorType, ValueType};
++
+ pub fn parse_type_shape(type_shape: &str) -> (String, String, String) {
+     let ttype_end = type_shape.find('[').unwrap_or(type_shape.len());
+     let ttype = type_shape[..ttype_end].to_string();
+@@ -42,7 +44,98 @@ pub fn parse_type_shape(type_shape: &str) -> (String, String, String) {
+     (ttype, tshape, ttile)
+ }
+ 
+-pub fn parse_line(line: &str) -> Option<(String, String, String, String, String, String, String)> {
++fn find_result_shape_end(rest: &str) -> Option<usize> {
++    let mut paren_depth = 0usize;
++    let mut bracket_depth = 0usize;
++    let mut brace_depth = 0usize;
++
++    for (index, ch) in rest.char_indices() {
++        match ch {
++            '(' => paren_depth += 1,
++            ')' => paren_depth = paren_depth.checked_sub(1)?,
++            '[' => bracket_depth += 1,
++            ']' => bracket_depth = bracket_depth.checked_sub(1)?,
++            '{' => brace_depth += 1,
++            '}' => brace_depth = brace_depth.checked_sub(1)?,
++            _ if ch.is_whitespace()
++                && paren_depth == 0
++                && bracket_depth == 0
++                && brace_depth == 0 =>
++            {
++                return Some(index);
++            }
++            _ => {}
++        }
++    }
++
++    None
++}
++
++fn split_top_level_commas(value: &str) -> Vec<String> {
++    let mut parts = Vec::new();
++    let mut start = 0usize;
++    let mut paren_depth = 0usize;
++    let mut bracket_depth = 0usize;
++    let mut brace_depth = 0usize;
++
++    for (index, ch) in value.char_indices() {
++        match ch {
++            '(' => paren_depth += 1,
++            ')' => {
++                paren_depth = paren_depth
++                    .checked_sub(1)
++                    .expect("unmatched ')' while parsing HLO type");
++            }
++            '[' => bracket_depth += 1,
++            ']' => {
++                bracket_depth = bracket_depth
++                    .checked_sub(1)
++                    .expect("unmatched ']' while parsing HLO type");
++            }
++            '{' => brace_depth += 1,
++            '}' => {
++                brace_depth = brace_depth
++                    .checked_sub(1)
++                    .expect("unmatched '}' while parsing HLO type");
++            }
++            ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
++                parts.push(value[start..index].trim().to_string());
++                start = index + ch.len_utf8();
++            }
++            _ => {}
++        }
++    }
++
++    assert_eq!(paren_depth, 0, "unclosed '(' while parsing HLO type");
++    assert_eq!(bracket_depth, 0, "unclosed '[' while parsing HLO type");
++    assert_eq!(brace_depth, 0, "unclosed '{{' while parsing HLO type");
++
++    let final_part = value[start..].trim();
++    if !final_part.is_empty() {
++        parts.push(final_part.to_string());
++    }
++    parts
++}
++
++pub fn parse_value_type(type_shape: &str) -> ValueType {
++    let text = type_shape.trim();
++    if let Some(inner) = text.strip_prefix('(') {
++        let inner = inner.strip_suffix(')').expect("Unclosed tuple type");
++        assert!(!inner.trim_end().ends_with(','), "Trailing comma in tuple type");
++        return ValueType::Tuple(split_top_level_commas(inner).iter()
++            .map(|element| parse_value_type(element)).collect());
++    }
++    let (ttype, tshape, tile) = parse_type_shape(text);
++    let shape = if tshape == "[]" { vec![] } else {
++        tshape.split(',').map(|dim| dim.trim().parse::<i32>()
++            .expect("Expected static tensor dimension")).collect()
++    };
++    let tensor = TensorType { dtype: ttype.as_str().into(), shape, tile };
++    tensor.bytes();
++    ValueType::Tensor(tensor)
++}
++
++pub fn parse_line(line: &str) -> Option<(String, String, String, String, String)> {
+     let line = line.trim();
+ 
+     // 0. Ignore empty lines or comments
+@@ -64,19 +157,17 @@ pub fn parse_line(line: &str) -> Option<(String, String, String, String, String,
+ 
+     // 2. rest starts with type + shape + operator(operands) + rest
+ 
+-    // Find the first space to get type+shape
+-    let first_space = rest.find(' ')?;
+-    let (type_shape, after_type_shape) = rest.split_at(first_space);
++    // A tuple result may contain whitespace between its element types. Split only
++    // at whitespace outside all result-shape delimiters.
++    let result_shape_end = find_result_shape_end(rest)?;
++    let (type_shape, after_type_shape) = rest.split_at(result_shape_end);
+     let after_type_shape = after_type_shape.trim_start();
+ 
+-    // 3. Extract type, shape, and tile annotation from type_shape (e.g. u64[3,8]{;T(16,4)})
+-    let (ttype, tshape, ttile) = parse_type_shape(type_shape);
+-
+-    // 4. Extract operator name before '('
++    // 3. Extract operator name before '('
+     let op_start = after_type_shape.find('(')?;
+     let toperator = after_type_shape[..op_start].trim().to_string();
+ 
+-    // 5. Extract operands inside matching parentheses (find ')' after op_start)
++    // 4. Extract operands inside matching parentheses (find ')' after op_start)
+     let operands_start = op_start + 1;
+     let mut paren_count = 1;
+     let mut operands_end = operands_start;
+@@ -99,19 +190,17 @@ pub fn parse_line(line: &str) -> Option<(String, String, String, String, String,
+         .trim()
+         .to_string();
+ 
+-    // 6. Everything after the closing ')' is the rest
++    // 5. Everything after the closing ')' is the rest
+     let trest = after_type_shape[operands_end + 1..].trim().to_string();
+ 
+-    Some((tsymbol, ttype, tshape, ttile, toperator, toperands, trest))
++    Some((tsymbol, type_shape.to_string(), toperator, toperands, trest))
+ }
+ 
+ #[derive(Debug, Clone)]
+ pub enum HLOExpr {
+     Parameter {
+         tsymbol: String,
+-        ttype: String,
+-        tshape: String,
+-        ttile: String,
++        value_type: ValueType,
+         tidx: u32,
+     },
+     Constant {
+@@ -145,6 +234,17 @@ pub enum HLOExpr {
+         lhs: String,
+         rhs: String,
+     },
++    Tuple {
++        tsymbol: String,
++        element_types: Vec<ValueType>,
++        operands: Vec<String>,
++    },
++    GetTupleElement {
++        tsymbol: String,
++        value_type: ValueType,
++        source: String,
++        index: usize,
++    },
+     Concatenate {
+         tsymbol: String,
+         ttype: String,
+@@ -221,27 +321,59 @@ pub fn validate_region_exists(
+ 
+ pub fn parse_hlo_expr(
+     tsymbol: &str,
+-    ttype: &str,
+-    tshape: &str,
+-    ttile: &str,
++    type_shape: &str,
+     toperator: &str,
+     toperands: &str,
+     trest: &str,
+     regions: &std::collections::HashMap<String, HLORegion>,
+ ) -> Option<HLOExpr> {
+-    match toperator {
+-        "parameter" => {
++    if toperator == "tuple" {
++        let ValueType::Tuple(element_types) = parse_value_type(type_shape) else {
++            panic!("tuple requires a tuple result type");
++        };
++        let operands = split_top_level_commas(toperands);
++        assert_eq!(
++            element_types.len(),
++            operands.len(),
++            "Tuple result type and operand counts differ"
++        );
++        return Some(HLOExpr::Tuple {
++            tsymbol: tsymbol.to_string(),
++            element_types,
++            operands,
++        });
++    }
++
++    if toperator == "get-tuple-element" {
++            let operands = split_top_level_commas(toperands);
++            assert_eq!(operands.len(), 1, "get-tuple-element requires one operand");
++            let indices: Vec<String> = split_top_level_commas(trest.trim_start_matches(','))
++                .into_iter()
++                .filter_map(|attribute| {
++                    let (key, value) = attribute.split_once('=')?;
++                    (key.trim() == "index").then(|| value.trim().to_string())
++                })
++                .collect();
++            assert_eq!(indices.len(), 1, "get-tuple-element requires one index attribute");
++            let index = indices[0].parse::<usize>()
++                .expect("get-tuple-element index must be a nonnegative integer");
++            return Some(HLOExpr::GetTupleElement {
++                tsymbol: tsymbol.to_string(), value_type: parse_value_type(type_shape),
++                source: operands[0].clone(), index,
++            });
++    }
++    if toperator == "parameter" {
+             // Parameter(0) -- parse the index from operands
+             let tidx = toperands.trim().parse::<u32>().ok()?;
+-            Some(HLOExpr::Parameter {
++            return Some(HLOExpr::Parameter {
+                 tsymbol: tsymbol.to_string(),
+-                ttype: ttype.to_string(),
+-                tshape: tshape.to_string(),
+-                ttile: ttile.to_string(),
++                value_type: parse_value_type(type_shape),
+                 tidx,
+-            })
+-        }
+-
++            });
++    }
++    assert!(!type_shape.starts_with('('), "Tuple result unsupported for operator {}", toperator);
++    let (ttype, tshape, ttile) = parse_type_shape(type_shape);
++    match toperator {
+         "constant" => {
+             // constant(1002)
+             let value = toperands.trim().to_string();
+@@ -309,7 +441,8 @@ pub fn parse_hlo_expr(
+         | "or"
+         | "shift-left"
+         | "dot"
+-        | "divide" | "multiply" => {
++        | "divide"
++        | "multiply" => {
+             // binary operators with two operands separated by comma
+             let mut parts = toperands.split(',').map(|s| s.trim().to_string());
+             let lhs = parts.next().unwrap_or_default();
+@@ -501,8 +634,8 @@ pub struct HLORegion {
+ #[derive(Debug)]
+ pub struct HloModuleHeader {
+     pub module_name: String,
+-    pub input_types: Vec<String>,
+-    pub output_type: String,
++    pub input_types: Vec<ValueType>,
++    pub output_type: ValueType,
+ }
+ 
+ pub fn parse_hlo_module_header_hand(line: &str) -> Option<HloModuleHeader> {
+@@ -567,83 +700,20 @@ pub fn parse_hlo_module_header_hand(line: &str) -> Option<HloModuleHeader> {
+     // Step 3: Process the cleaned layout
+     let layout_no_spaces = layout_cleaned.replace(" ", "");
+ 
+-    // Assume format: (input_types) -> output_type (no parentheses around output)
+-    let mut normalized_layout = layout_no_spaces.clone();
+-    if let Some(close_paren_pos) = normalized_layout.find(')') {
+-        if let Some(arrow_pos) = normalized_layout[close_paren_pos..].find("->") {
+-            let actual_arrow_pos = close_paren_pos + arrow_pos;
+-            normalized_layout = format!(
+-                "{}|{}",
+-                &normalized_layout[..close_paren_pos],
+-                &normalized_layout[actual_arrow_pos + 2..] // Skip the "->"
+-            );
+-        } else {
+-            panic!(
+-                "Expected format: (input_types) -> output_type. Found: {}",
+-                layout_no_spaces
+-            );
+-        }
+-    } else {
+-        panic!(
+-            "Expected format: (input_types) -> output_type. Found: {}",
+-            layout_no_spaces
+-        );
+-    }
+-
+-    let io_parts: Vec<&str> = normalized_layout.split('|').collect();
+-    if io_parts.len() != 2 {
+-        return None;
+-    }
+-
+-    // Extract inputs and output
+-    let inputs_str = io_parts[0].strip_prefix('(').unwrap_or(io_parts[0]);
+-    let output_type = io_parts[1].strip_suffix(')').unwrap_or(io_parts[1]);
+-
+-    // 6) split inputs on top-level commas (ignore commas inside brackets)
+-    fn split_top_level_commas(s: &str) -> Vec<String> {
+-        let mut parts = Vec::new();
+-        let mut buf = String::new();
+-        let mut depth = 0usize; // bracket depth for '[' and ']'
+-
+-        for ch in s.chars() {
+-            match ch {
+-                '[' => {
+-                    depth += 1;
+-                    buf.push(ch);
+-                }
+-                ']' => {
+-                    if depth > 0 {
+-                        depth -= 1;
+-                    }
+-                    buf.push(ch);
+-                }
+-                ',' if depth == 0 => {
+-                    let piece = buf.trim();
+-                    if !piece.is_empty() {
+-                        parts.push(piece.to_string());
+-                    }
+-                    buf.clear();
+-                }
+-                _ => buf.push(ch),
+-            }
+-        }
+-        let piece = buf.trim();
+-        if !piece.is_empty() {
+-            parts.push(piece.to_string());
+-        }
+-        parts
+-    }
++    let (inputs_part, output_part) = layout_no_spaces.split_once("->")?;
++    let inputs_str = inputs_part.strip_prefix('(')?.strip_suffix(')')?;
+ 
+     let input_types = if inputs_str.is_empty() {
+         Vec::new()
+     } else {
+-        split_top_level_commas(inputs_str)
++        split_top_level_commas(inputs_str).iter().map(|ty| parse_value_type(ty)).collect()
+     };
++    let output_type = parse_value_type(output_part);
+ 
+     Some(HloModuleHeader {
+         module_name,
+         input_types,
+-        output_type: output_type.to_string(),
++        output_type,
+     })
+ }
+ 
+@@ -704,11 +774,16 @@ pub fn parse_region(
+             };
+ 
+             if !instruction_line.is_empty() {
+-                if let Some((tsymbol, ttype, tshape, ttile, toperator, toperands, trest)) =
++                if let Some((tsymbol, type_shape, toperator, toperands, trest)) =
+                     parse_line(instruction_line)
+                 {
+                     if let Some(expr) = parse_hlo_expr(
+-                        &tsymbol, &ttype, &tshape, &ttile, &toperator, &toperands, &trest, regions,
++                        &tsymbol,
++                        &type_shape,
++                        &toperator,
++                        &toperands,
++                        &trest,
++                        regions,
+                     ) {
+                         instructions.push(expr);
+                     }
+@@ -733,6 +808,8 @@ pub fn parse_region(
+ pub struct HloInstruction {
+     pub expr: HLOExpr,
+     pub is_root: bool,
++    pub symbol: String,
++    pub value_type: ValueType,
+ }
+ 
+ pub fn parse_hlo_module_with_regions(
+@@ -778,15 +855,22 @@ pub fn parse_hlo_module_with_regions(
+                     break; // End of entry computation
+                 }
+ 
+-                if let Some((tsymbol, ttype, tshape, ttile, toperator, toperands, trest)) =
++                if let Some((tsymbol, type_shape, toperator, toperands, trest)) =
+                     parse_line(instruction_line)
+                 {
+                     if let Some(expr) = parse_hlo_expr(
+-                        &tsymbol, &ttype, &tshape, &ttile, &toperator, &toperands, &trest, &regions,
++                        &tsymbol,
++                        &type_shape,
++                        &toperator,
++                        &toperands,
++                        &trest,
++                        &regions,
+                     ) {
+                         entry_instructions.push(HloInstruction {
+                             expr,
+                             is_root: instruction_line.split_whitespace().next() == Some("ROOT"),
++                            symbol: tsymbol,
++                            value_type: parse_value_type(&type_shape),
+                         });
+                     }
+                 }
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+index 2b3292696808e97ea6572051557b531038c66925..3fb587c19d1840ddb5a2949353bcac7c6d142ff5 100644
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -272,11 +272,12 @@ fn main() {
+     println!("Starting Phase 1 Module 1: E-Graph Initializer...");
+     println!();
+ 
+-    let (init_egraph, hbm_offsets, root, inputs, metadata) =
++    let (init_egraph, hbm_offsets, root, inputs, metadata, outputs) =
+         isel::initializer::parse_hlo_module_to_egraph(&hlo_path).unwrap();
+ 
+     println!("HBM Offsets: {:?}", hbm_offsets);
+     println!("Root ID: {:?}", root);
++    println!("Output roots: {:?}", outputs);
+     println!("Inputs: {:?}", inputs);
+     println!();
+ 

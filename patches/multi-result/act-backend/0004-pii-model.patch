@@ -1,0 +1,615 @@
+diff --git a/act_backend/generic/src/ir/buffer.rs b/act_backend/generic/src/ir/buffer.rs
+index 6403d25e7f421887a0fa5d78431048244a452410..7db019478fe69bca9d522176b76132e0ceb7d522 100644
+--- a/act_backend/generic/src/ir/buffer.rs
++++ b/act_backend/generic/src/ir/buffer.rs
+@@ -1,6 +1,6 @@
+ use crate::ir::egraph::TensorOp;
+ 
+-#[derive(Debug, PartialEq, Clone, Copy)]
++#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+ pub enum Buffer {
+     HBM,
+ {{BUFFER_VARIANTS}}
+@@ -17,15 +17,39 @@ impl std::fmt::Display for Buffer {
+     }
+ }
+ 
+-// Return buffer assignment for an instruction enode.
+-// Returns Some(vec![out_buf, in_buf1, in_buf2, ...]) or None if not applicable.
+-pub fn buffer_assignment(en: &TensorOp) -> Option<Vec<Buffer>> {
++/// Declared tensor result and operand buffers, in their respective ISA order.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct BufferSignature {
++    pub outputs: Vec<Buffer>,
++    pub inputs: Vec<Buffer>,
++}
++
++/// The generator preserves instr_outputs and instr_inputs separately.
++/// Tuple/GTE are logical values, not executable instructions.
++pub fn buffer_signature(en: &TensorOp) -> Option<BufferSignature> {
+     match en {
+-{{ISA_BUFFER_ASSIGNMENT_MATCH_ARMS}}
+-        TensorOp::OpSlice(_, _) => Some(vec![Buffer::ANY, Buffer::ANY]),
+-        TensorOp::OpConcat(_, _) => Some(vec![Buffer::ANY, Buffer::ANY, Buffer::ANY]),
+-        TensorOp::DetectedConst(_) => Some(vec![Buffer::HBM]),
+-        TensorOp::Var(_) => Some(vec![Buffer::HBM]),
++{{ISA_BUFFER_SIGNATURE_MATCH_ARMS}}
++        TensorOp::OpSlice(_, _) => Some(BufferSignature {
++            outputs: vec![Buffer::ANY],
++            inputs: vec![Buffer::ANY],
++        }),
++        TensorOp::OpConcat(_, _) => Some(BufferSignature {
++            outputs: vec![Buffer::ANY],
++            inputs: vec![Buffer::ANY, Buffer::ANY],
++        }),
++        TensorOp::DetectedConst(_) | TensorOp::Var(_) => Some(BufferSignature {
++            outputs: vec![Buffer::HBM],
++            inputs: vec![],
++        }),
+         _ => None,
+     }
+ }
++
++/// Compatibility view for the scalar fast/slow extractors only.
++pub fn single_buffer_assignment(en: &TensorOp) -> Option<Vec<Buffer>> {
++    let signature = buffer_signature(en)?;
++    if signature.outputs.len() != 1 {
++        return None;
++    }
++    Some(signature.outputs.into_iter().chain(signature.inputs).collect())
++}
+diff --git a/act_backend/generic/src/ir/pii.rs b/act_backend/generic/src/ir/pii.rs
+index 3fc6718d1854b8c10da0734777b75e4250caeae2..1e255839c7c7c6b88ef4f9c25f6230ac04c460cc 100644
+--- a/act_backend/generic/src/ir/pii.rs
++++ b/act_backend/generic/src/ir/pii.rs
+@@ -1,27 +1,104 @@
+ use std::fs::File;
+ use std::io::Write;
+ 
+-use crate::ir::buffer::Buffer;
++use crate::ir::buffer::{buffer_signature, Buffer};
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+ 
+-use crate::ir::buffer::buffer_assignment as get_bufs;
++/// An edge refers to one result of one instruction instance, not an e-class.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub struct ValueRef {
++    pub node: usize,
++    pub result: usize,
++}
+ 
+-#[derive(Debug, Clone)]
+-pub struct PiiNode {
+-    pub id: usize,
+-    pub op: TensorOp,
++impl ValueRef {
++    pub fn single(node: usize) -> Self {
++        Self { node, result: 0 }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq)]
++pub struct PiiResult {
+     pub info: TensorInfo,
+     pub buffer: Buffer,
+     pub hbm_offset: Option<i32>,
+-    pub children: Vec<usize>,
+ }
+ 
+-#[derive(Debug, Clone, Default)]
++#[derive(Debug, Clone, PartialEq)]
++pub struct PiiNode {
++    pub id: usize,
++    pub op: TensorOp,
++    pub children: Vec<ValueRef>,
++    pub results: Vec<PiiResult>,
++}
++
++#[derive(Debug, Clone, Default, PartialEq)]
+ pub struct PiiGraph {
+     pub nodes: Vec<PiiNode>,
++    /// ABI output order is separate from instruction order and result numbering.
++    pub outputs: Vec<ValueRef>,
+ }
+ 
+ impl PiiGraph {
++    pub fn requires_multi_result_allocation(&self) -> bool {
++        self.outputs.len() != 1 || self.nodes.iter().any(|node| node.results.len() != 1)
++    }
++
++    pub fn result(&self, value: ValueRef) -> &PiiResult {
++        &self.nodes[value.node].results[value.result]
++    }
++
++    pub fn result_mut(&mut self, value: ValueRef) -> &mut PiiResult {
++        &mut self.nodes[value.node].results[value.result]
++    }
++
++    pub fn add_instruction(
++        &mut self,
++        op: TensorOp,
++        infos: Vec<TensorInfo>,
++        children: Vec<ValueRef>,
++    ) -> Vec<ValueRef> {
++        let signature = buffer_signature(&op).expect("Not a PII instruction");
++        assert_eq!(
++            op.num_children(),
++            signature.inputs.len(),
++            "ISA input arity mismatch"
++        );
++        assert_eq!(infos.len(), signature.outputs.len());
++        assert_eq!(children.len(), signature.inputs.len());
++        let mut buffers = signature.outputs;
++        for buffer in &mut buffers {
++            if *buffer == Buffer::ANY {
++                let first = self.result(children[0]).buffer;
++                assert!(children
++                    .iter()
++                    .all(|&child| self.result(child).buffer == first));
++                *buffer = first;
++            }
++        }
++        let node = self.nodes.len();
++        let results = infos
++            .into_iter()
++            .zip(buffers)
++            .map(|(info, buffer)| PiiResult {
++                info,
++                buffer,
++                hbm_offset: None,
++            })
++            .collect::<Vec<_>>();
++        let refs = (0..results.len())
++            .map(|result| ValueRef { node, result })
++            .collect();
++        self.nodes.push(PiiNode {
++            id: node,
++            op,
++            children,
++            results,
++        });
++        refs
++    }
++
++    /// Compatibility adapter for the existing scalar fast/slow algorithms.
+     pub fn add_node(
+         &mut self,
+         op: TensorOp,
+@@ -29,66 +106,125 @@ impl PiiGraph {
+         children: Vec<usize>,
+         hbm_offset: Option<i32>,
+     ) -> usize {
+-        let mut buffer = match get_bufs(&op) {
+-            Some(bufs) => bufs[0],
+-            None => panic!("Not a valid pii node operation: {:?}", op),
+-        };
+-        if buffer == Buffer::ANY {
+-            // If all children have the same buffer, we use that buffer else panic
+-            let child_buffers: Vec<Buffer> =
+-                children.iter().map(|&c| self.nodes[c].buffer).collect();
+-            if child_buffers.is_empty() {
+-                panic!("ANY buffer requires at least one child to infer buffer type");
++        let refs = self.add_instruction(
++            op,
++            vec![info],
++            children.into_iter().map(ValueRef::single).collect(),
++        );
++        self.result_mut(refs[0]).hbm_offset = hbm_offset;
++        refs[0].node
++    }
++
++    pub fn is_valid(&self) -> bool {
++        if self.outputs.is_empty() {
++            // A pure program with no tensor results has no live instructions.
++            return self.nodes.is_empty();
++        }
++        for (index, n) in self.nodes.iter().enumerate() {
++            let Some(sig) = buffer_signature(&n.op) else {
++                return false;
++            };
++            if n.id != index
++                || n.op.num_children() != sig.inputs.len()
++                || n.results.len() != sig.outputs.len()
++                || n.children.len() != sig.inputs.len()
++                || n.children
++                    .iter()
++                    .any(|v| v.node >= index || v.result >= self.nodes[v.node].results.len())
++            {
++                return false;
+             }
+-            let first_buf = child_buffers[0];
+-            if child_buffers.iter().all(|&b| b == first_buf) {
+-                buffer = first_buf;
+-            } else {
+-                panic!("Cannot infer buffer: children have different buffers");
++            for (data, &buffer) in n.results.iter().zip(&sig.outputs) {
++                if data.buffer == Buffer::ANY || (buffer != Buffer::ANY && data.buffer != buffer) {
++                    return false;
++                }
++            }
++            for (&child, &buffer) in n.children.iter().zip(&sig.inputs) {
++                let required = if buffer == Buffer::ANY {
++                    n.results[0].buffer
++                } else {
++                    buffer
++                };
++                if self.result(child).buffer != required {
++                    return false;
++                }
+             }
+         }
+-
+-        let idx = self.nodes.len();
+-        self.nodes.push(PiiNode {
+-            id: idx,
+-            op,
+-            info,
+-            children,
+-            buffer,
+-            hbm_offset,
+-        });
+-        idx
++        let mut reached = vec![false; self.nodes.len()];
++        let mut pending = vec![];
++        for &value in &self.outputs {
++            if value.node >= self.nodes.len()
++                || value.result >= self.nodes[value.node].results.len()
++                || self.result(value).buffer != Buffer::HBM
++            {
++                return false;
++            }
++            pending.push(value.node);
++        }
++        while let Some(id) = pending.pop() {
++            if !reached[id] {
++                reached[id] = true;
++                pending.extend(self.nodes[id].children.iter().map(|v| v.node));
++            }
++        }
++        reached.into_iter().all(|seen| seen)
+     }
+ 
+-    fn shape_to_string(shape: &Vec<i32>) -> String {
+-        let s: Vec<String> = shape.iter().map(|d| d.to_string()).collect();
+-        format!("[{}]", s.join(","))
++    fn value_name(&self, value: ValueRef) -> String {
++        if self.nodes[value.node].results.len() == 1 {
++            format!("t{}", value.node)
++        } else {
++            format!("t{}.{}", value.node, value.result)
++        }
+     }
+ 
+     pub fn save(&self, path: &std::path::PathBuf) {
+         let mut file = File::create(path).expect("Unable to create file");
+-        write!(file, "{}", self).expect("Unable to write data");
++        write!(file, "{}", self).expect("Unable to write PII");
+     }
+ }
+ 
+ impl std::fmt::Display for PiiGraph {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        for n in self.nodes.iter() {
+-            let dtype = n.info.dtype.to_string();
+-            let shape = Self::shape_to_string(&n.info.shape);
+-            let op_str = n.op.to_string();
+-            let children_str: Vec<String> = n.children.iter().map(|c| format!("t{}", c)).collect();
+-            writeln!(
+-                f,
+-                "t{}: {}[{}] = {}{} {}({})",
+-                n.id,
+-                n.buffer,
+-                n.hbm_offset.unwrap_or(-1),
+-                dtype,
+-                shape,
+-                op_str,
+-                children_str.join(", ")
+-            )?;
++        let outputs = self
++            .outputs
++            .iter()
++            .map(|&v| self.value_name(v))
++            .collect::<Vec<_>>();
++        writeln!(f, "# outputs: {}", outputs.join(", "))?;
++        for n in &self.nodes {
++            let results = n
++                .results
++                .iter()
++                .enumerate()
++                .map(|(result, data)| {
++                    let shape = data
++                        .info
++                        .shape
++                        .iter()
++                        .map(|d| d.to_string())
++                        .collect::<Vec<_>>();
++                    format!(
++                        "{}: {}[{}] = {}[{}]",
++                        self.value_name(ValueRef { node: n.id, result }),
++                        data.buffer,
++                        data.hbm_offset.unwrap_or(-1),
++                        data.info.dtype,
++                        shape.join(",")
++                    )
++                })
++                .collect::<Vec<_>>();
++            let lhs = if results.len() == 1 {
++                results[0].clone()
++            } else {
++                format!("({})", results.join("; "))
++            };
++            let children = n
++                .children
++                .iter()
++                .map(|&v| self.value_name(v))
++                .collect::<Vec<_>>();
++            writeln!(f, "{} {}({})", lhs, n.op, children.join(", "))?;
+         }
+         Ok(())
+     }
+diff --git a/act_backend/generic/src/isel/extractor/fast.rs b/act_backend/generic/src/isel/extractor/fast.rs
+index d7157fa18e488e5fef1e6215b72995e9834ff7bb..6f5305b5f6f77e23fc0eadd046b5b23b1d4d5a48 100644
+--- a/act_backend/generic/src/isel/extractor/fast.rs
++++ b/act_backend/generic/src/isel/extractor/fast.rs
+@@ -5,7 +5,7 @@ use crate::ir::buffer::Buffer;
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+ use crate::ir::pii::PiiGraph;
+ 
+-use crate::ir::buffer::buffer_assignment as get_bufs;
++use crate::ir::buffer::single_buffer_assignment as get_bufs;
+ use crate::isel::extractor::utils::{annotate_constants, detect_constants, get_hbm_offset};
+ 
+ /// Phase 3: Graph Extractor
+@@ -35,7 +35,7 @@ pub fn extract_fast(
+         &mut selected,
+     );
+     if ret {
+-        vec![select2pii_graph(&selected, hbm_offsets)]
++        vec![select2pii_graph(&selected, hbm_offsets, root)]
+     } else {
+         vec![]
+     }
+@@ -71,8 +71,10 @@ fn get_pii_graph(
+         // attempt fails (backtracking). This prevents nodes selected while exploring
+         // a branch that later fails from remaining in `selected`.
+         let snapshot = selected.clone();
+-        // base case: input enode -- TODO: this assumes only 1 enode in the eclass
+-        if inputs.contains(&eclass) && target_buf == Buffer::HBM {
++        // Base case: the original HBM input, not another equivalent enode.
++        if inputs.contains(&eclass) && target_buf == Buffer::HBM
++            && matches!(en, TensorOp::Var(_))
++        {
+             selected.insert(en.clone(), (eclass, egraph[eclass].data.clone()));
+             return true;
+         }
+@@ -120,6 +122,7 @@ fn get_pii_graph(
+ fn select2pii_graph(
+     selected: &HashMap<TensorOp, (Id, TensorInfo)>,
+     hbm_offsets: &Vec<(Option<Id>, i32)>,
++    root: Id,
+ ) -> PiiGraph {
+     let mut pii_graph = PiiGraph::default();
+ 
+@@ -178,5 +181,8 @@ fn select2pii_graph(
+         }
+     }
+ 
++    if let Some(&id) = eclass_map.get(&root) {
++        pii_graph.outputs.push(crate::ir::pii::ValueRef::single(id));
++    }
+     pii_graph
+ }
+diff --git a/act_backend/generic/src/isel/extractor/slow.rs b/act_backend/generic/src/isel/extractor/slow.rs
+index 512a1a7f0224a21787977a2ce450728aef634290..af3851c98007912a643ad318441cc579750602d4 100644
+--- a/act_backend/generic/src/isel/extractor/slow.rs
++++ b/act_backend/generic/src/isel/extractor/slow.rs
+@@ -6,7 +6,7 @@ use crate::ir::buffer::Buffer;
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+ use crate::ir::pii::PiiGraph;
+ 
+-use crate::ir::buffer::buffer_assignment as get_bufs;
++use crate::ir::buffer::single_buffer_assignment as get_bufs;
+ use crate::isel::extractor::utils::{annotate_constants, detect_constants, get_hbm_offset};
+ 
+ /// Phase 3: Graph Extractor
+@@ -66,8 +66,10 @@ fn get_extraction_trees(
+     }
+ 
+     for en in &egraph[eclass].nodes {
+-        // base case: input enode -- TODO: this assumes only 1 enode in the eclass
+-        if inputs.contains(&eclass) && target_buf == Buffer::HBM {
++        // Base case: the original HBM input, not another equivalent enode.
++        if inputs.contains(&eclass) && target_buf == Buffer::HBM
++            && matches!(en, TensorOp::Var(_))
++        {
+             trees.push(vec![en.clone()]);
+             break;
+         }
+@@ -272,5 +274,8 @@ fn extraction_to_piigraph(
+         idx_map.insert(idx, node_id);
+     }
+ 
++    if let Some(&id) = idx_map.get(&0) {
++        pii.outputs.push(crate::ir::pii::ValueRef::single(id));
++    }
+     pii
+ }
+diff --git a/act_backend/generic/src/lib.rs b/act_backend/generic/src/lib.rs
+index 7f24475319dac460e8ca4a65624f583db61be043..9e933d89cf83a5ae56943b22630b3bbc09487207 100644
+--- a/act_backend/generic/src/lib.rs
++++ b/act_backend/generic/src/lib.rs
+@@ -13,7 +13,7 @@ pub static PROCESSED: LazyLock<Mutex<HashSet<(Symbol, Id, Subst)>>> =
+ pub const TIME_LIMIT: Duration = Duration::from_millis(10000);
+ // Number of iterations after which the extractor runs
+ pub const N: usize = 1;
+-// Max PiiGraph size for Slow Extractor Algorithm
++// Max extraction tree size per output for Slow Extractor Algorithm
+ pub const SLOW_LIMIT_START: usize = 10;
+ pub const SLOW_LIMIT_CUTOFF: usize = 15;
+ // Ratio of termination time to time since last improvement
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+index 1021d0f221b2304f8a1819c7bbaf9e95e30708ae..d69c07763290d94c44cc49f5f9cc7781ed9ecd30 100644
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -49,6 +49,27 @@ struct AsmCandidate {
+     timestamp: Duration,
+ }
+ 
++fn allocate_pii(
++    pii: &ir::pii::PiiGraph,
++    pii_path: &PathBuf,
++    metadata_path: &PathBuf,
++    asm_path: &PathBuf,
++) {
++    pii.save(pii_path);
++    if pii.requires_multi_result_allocation() {
++        eprintln!(
++            concat!(
++                "Multi-output PII extracted ({} outputs): {}. ",
++                "Multi-output allocation/emission is not implemented yet; ",
++                "no assembly was generated."
++            ),
++            pii.outputs.len(), pii_path.display()
++        );
++        process::exit(1);
++    }
++    backend::malloc::cpp_bridge(pii_path, metadata_path, asm_path);
++}
++
+ fn check_termination(best: Option<AsmCandidate>, start: &Instant, output_path: &PathBuf) {
+     let current_time = start.elapsed();
+     match best {
+@@ -349,12 +370,11 @@ fn main() {
+                         // Phase 2
+                         let pii_path =
+                             log_dir_for_hook.join(format!("{}.pii", *pii_counter.borrow()));
+-                        pii.save(&pii_path);
+ 
+                         let asm_path =
+                             log_dir_for_hook.join(format!("{}.py", *pii_counter.borrow()));
+ 
+-                        backend::malloc::cpp_bridge(&pii_path, &metadata_path_for_hook, &asm_path);
++                        allocate_pii(&pii, &pii_path, &metadata_path_for_hook, &asm_path);
+ 
+                         // Check cost and update best if necessary
+                         update_best(&mut *best.borrow_mut(), &asm_path, &start);
+@@ -420,10 +440,9 @@ fn main() {
+ 
+                     // Phase 2
+                     let pii_path = log_dir.join(format!("{}.pii", *pii_counter.borrow()));
+-                    pii.save(&pii_path);
+ 
+                     let asm_path = log_dir.join(format!("{}.py", *pii_counter.borrow()));
+-                    backend::malloc::cpp_bridge(&pii_path, &metadata_path, &asm_path);
++                    allocate_pii(&pii, &pii_path, &metadata_path, &asm_path);
+ 
+                     // Check cost and update best if necessary
+                     update_best(&mut *best.borrow_mut(), &asm_path, &start);
+diff --git a/act_backend/ir_buffer_rs_generator.py b/act_backend/ir_buffer_rs_generator.py
+index 3087231f752917d95406b32a5fbf9bb62330772b..a3dfaf2b1a22140ed737f795d8c9f122e20035b4 100644
+--- a/act_backend/ir_buffer_rs_generator.py
++++ b/act_backend/ir_buffer_rs_generator.py
+@@ -9,7 +9,7 @@ class InstructionInfo:
+     name: str
+     arity: int
+     has_metadata: bool
+-    buffer_assignment: str
++    buffer_signature: str
+ 
+ 
+ def get_rust_variant_name(instr_name: str) -> str:
+@@ -29,18 +29,25 @@ def extract_instruction_info(instructions) -> List[InstructionInfo]:
+         arity = len(instruction.instr_inputs)
+         has_metadata = len(instruction.comp_attr) > 0
+ 
+-        buffers = []
+-        for output in instruction.instr_outputs:
+-            buffer_name = get_buffer_name(output[0])
+-            buffers.append(f"Buffer::{buffer_name}")
+-
+-        for input_item in instruction.instr_inputs:
+-            buffer_name = get_buffer_name(input_item[0])
+-            buffers.append(f"Buffer::{buffer_name}")
+-
+-        buffer_assignment = f"Some(vec![{', '.join(buffers)}])" if buffers else "None"
+-
+-        info_list.append(InstructionInfo(name, arity, has_metadata, buffer_assignment))
++        outputs = [
++            f"Buffer::{get_buffer_name(output[0])}"
++            for output in instruction.instr_outputs
++        ]
++        inputs = [
++            f"Buffer::{get_buffer_name(operand[0])}"
++            for operand in instruction.instr_inputs
++        ]
++        # Keep the two declared lists distinct; never infer the result count
++        # from a flattened vector or from the e-node's child arity.
++        buffer_signature = (
++            "Some(BufferSignature { "
++            f"outputs: vec![{', '.join(outputs)}], "
++            f"inputs: vec![{', '.join(inputs)}]"
++            " })"
++            if outputs else "None"
++        )
++
++        info_list.append(InstructionInfo(name, arity, has_metadata, buffer_signature))
+ 
+     return info_list
+ 
+@@ -61,20 +68,20 @@ def generate_buffer_variants(data_models, templates):
+     return variants, display_arms
+ 
+ 
+-def generate_buffer_assignment_arms(instructions_info: List[InstructionInfo], templates):
++def generate_buffer_signature_arms(instructions_info: List[InstructionInfo], templates):
+     """Generate buffer assignment arms using templates"""
+-    buffer_assignment_arms = []
++    buffer_signature_arms = []
+ 
+     for info in instructions_info:
+         variant_name = get_rust_variant_name(info.name)
+         pattern = "(_, _)" if info.has_metadata else "(_)"
+-        buffer_assignment_arms.append(
+-            templates.render("buffer.rs.ISA_BUFFER_ASSIGNMENT_MATCH_ARMS.arm.txt",
++        buffer_signature_arms.append(
++            templates.render("buffer.rs.ISA_BUFFER_SIGNATURE_MATCH_ARMS.arm.txt",
+                            variant_name=variant_name,
+                            pattern=pattern,
+-                           buffer_assignment=info.buffer_assignment))
++                           buffer_signature=info.buffer_signature))
+ 
+-    return buffer_assignment_arms
++    return buffer_signature_arms
+ 
+ 
+ def generate_buffer_rs_file(act_dest_dir, instructions, data_models):
+@@ -87,12 +94,12 @@ def generate_buffer_rs_file(act_dest_dir, instructions, data_models):
+ 
+     buffer_variants, buffer_display_arms = generate_buffer_variants(data_models, templates)
+     instructions_info = extract_instruction_info(instructions)
+-    buffer_assignment_arms = generate_buffer_assignment_arms(instructions_info, templates)
++    buffer_signature_arms = generate_buffer_signature_arms(instructions_info, templates)
+ 
+     replacements = {
+         '{{BUFFER_VARIANTS}}': '\n'.join(buffer_variants),
+         '{{BUFFER_DISPLAY_MATCH_ARMS}}': '\n'.join(buffer_display_arms),
+-        '{{ISA_BUFFER_ASSIGNMENT_MATCH_ARMS}}': '\n'.join(buffer_assignment_arms)
++        '{{ISA_BUFFER_SIGNATURE_MATCH_ARMS}}': '\n'.join(buffer_signature_arms)
+     }
+ 
+     for placeholder, replacement in replacements.items():
+diff --git a/act_backend/templates/buffer.rs.ISA_BUFFER_ASSIGNMENT_MATCH_ARMS.arm.txt b/act_backend/templates/buffer.rs.ISA_BUFFER_ASSIGNMENT_MATCH_ARMS.arm.txt
+deleted file mode 100644
+index f55c6ad553d02b4836e741a8099df75e264e6b4e..0000000000000000000000000000000000000000
+--- a/act_backend/templates/buffer.rs.ISA_BUFFER_ASSIGNMENT_MATCH_ARMS.arm.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-        TensorOp::{{variant_name}}{{pattern}} => {{buffer_assignment}},
+\ No newline at end of file
+diff --git a/act_backend/templates/buffer.rs.ISA_BUFFER_SIGNATURE_MATCH_ARMS.arm.txt b/act_backend/templates/buffer.rs.ISA_BUFFER_SIGNATURE_MATCH_ARMS.arm.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebf1ec322f19b03c6c1902a084aa305c8d967d04
+--- /dev/null
++++ b/act_backend/templates/buffer.rs.ISA_BUFFER_SIGNATURE_MATCH_ARMS.arm.txt
+@@ -0,0 +1 @@
++        TensorOp::{{variant_name}}{{pattern}} => {{buffer_signature}},

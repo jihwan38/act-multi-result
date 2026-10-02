@@ -1,0 +1,145 @@
+diff --git a/taidl_to/instruction_codegen.py b/taidl_to/instruction_codegen.py
+index b2abe20e148c855451250ca6ddcc9ffa707e801f..b7b563b4a8663d98d8ccd5f2948fc356f5121ce0 100644
+--- a/taidl_to/instruction_codegen.py
++++ b/taidl_to/instruction_codegen.py
+@@ -6,6 +6,7 @@ since they produce oracle-specific output (HLO simulation code).
+ 
+ from typing import List
+ from taidl import Instruction
++from taidl.semantics import semantic_interface
+ 
+ from .template import init_templates, templates, generate_code, indent_code
+ from .semantic_generator import generate_semantic_code
+@@ -15,6 +16,9 @@ def generate_inputs(instruction: Instruction) -> str:
+     """Generate input loading code from instruction's instr_inputs"""
+     init_templates()
+     output = ""
++    interface = semantic_interface(instruction.instr_semantics_ast,
++                                   input_count=len(instruction.instr_inputs),
++                                   output_count=len(instruction.instr_outputs)) if instruction.instr_semantics_ast else None
+ 
+     for counter, slice_spec in enumerate(instruction.instr_inputs, start=1):
+         assert len(slice_spec) == 3, "Wrong input slice formatting."
+@@ -37,7 +41,8 @@ def generate_inputs(instruction: Instruction) -> str:
+ 
+         mapping = {
+             "rhs_name": f"'{buffer_name}'",
+-            "lhs": f"'In{counter}'",
++            "lhs": repr(interface.inputs[counter - 1].IDENTIFIER().getText().lstrip('%')
++                        if interface else f'In{counter}'),
+             "type": f"'{model.var_type}'",
+             "size": "[" + ",".join(size_list) + "]",
+             "slice": "[" + ",".join(slice_configs) + "]"
+@@ -51,6 +56,9 @@ def generate_outputs(instruction: Instruction) -> str:
+     """Generate output storing code from instruction's instr_outputs"""
+     init_templates()
+     code_output = ""
++    interface = semantic_interface(instruction.instr_semantics_ast,
++                                   input_count=len(instruction.instr_inputs),
++                                   output_count=len(instruction.instr_outputs)) if instruction.instr_semantics_ast else None
+ 
+     for counter, slice_spec in enumerate(instruction.instr_outputs):
+         assert len(slice_spec) == 3, "Wrong output slice formatting."
+@@ -65,7 +73,8 @@ def generate_outputs(instruction: Instruction) -> str:
+             start_list.append("'0'")
+ 
+         mapping = {
+-            "lhs": f"'Out{counter}'",
++            "lhs": repr(interface.results[counter].IDENTIFIER().getText().lstrip('%')
++                        if interface else f'Out{counter}'),
+             "rhs_name": f"'{buffer_name}'",
+             "slice": "[" + ",".join(start_list) + "]"
+         }
+@@ -146,7 +155,7 @@ def generate_semantic_function(instruction: Instruction) -> str:
+     output = f'\ndef {instruction.instruction}_semantics(attrs, state, global_counters):\n'
+     output += '\toutput = []\n\tlvars={}\n'
+     output += inputs
+-    output += semantics
++    output += semantics + '\n'
+     output += outputs
+     output += '\treturn output\n'
+     return output
+diff --git a/taidl_to/oracle_visitor.py b/taidl_to/oracle_visitor.py
+index 4f675fde99382dae1efb849742c3ce9fd268c6f5..d054ae732995b95456064a778e2f8f1c9f19be23 100644
+--- a/taidl_to/oracle_visitor.py
++++ b/taidl_to/oracle_visitor.py
+@@ -1,6 +1,7 @@
+ """ANTLR4-based visitor for parsing TAIDL semantics into HLO generation code"""
+ 
+ from taidl.antlr4 import IDLV2Parser, IDLV2Visitor
++from taidl.semantics import semantic_interface
+ 
+ from .template import generate_code, templates, init_templates
+ 
+@@ -23,6 +24,7 @@ class OracleVisitor(IDLV2Visitor):
+             'multiply': 'MULTIPLY',
+             'divide': 'DIVIDE',
+             'broadcast': 'BROADCAST',
++            'concatenate': 'CONCATENATE',
+             'maximum': 'MAXIMUM',
+             'minimum': 'MINIMUM',
+             'xor': 'XOR',
+@@ -31,12 +33,15 @@ class OracleVisitor(IDLV2Visitor):
+         }
+ 
+     def visitModule(self, ctx: IDLV2Parser.ModuleContext):
++        semantic_interface(ctx)
+         self.instruction_lines.append("Module:")
+         return self.visitChildren(ctx)
+ 
+     def visitInstruction(self, ctx: IDLV2Parser.InstructionContext):
+-        if ctx.ROOT():
+-            pass
++        if ctx.OPERATION().getText() == 'tuple':
++            # The return tuple maps existing tensor values to output ports.
++            # generate_outputs emits the stores in that order.
++            return
+ 
+         lhs_name = ctx.IDENTIFIER().getText().lstrip('%')
+         result_type_info = self.visit(ctx.result_type())
+@@ -102,6 +107,17 @@ class OracleVisitor(IDLV2Visitor):
+                 dims = [dims]
+             mapping["dims"] = ", ".join(str(dim) for dim in dims)
+ 
++        elif template_name == 'CONCATENATE':
++            if len(operand_names) != 2:
++                raise ValueError("The Oracle currently supports two-input concatenate only")
++            mapping["A"] = f'"{operand_names[0]}"'
++            mapping["B"] = f'"{operand_names[1]}"'
++            dims = attributes.get('dimensions', [0])
++            if isinstance(dims, list):
++                mapping["dims"] = ", ".join(str(d) for d in dims)
++            else:
++                mapping["dims"] = str(dims)
++
+         elif template_name == 'TRANSPOSE':
+             if len(operand_names) > 0:
+                 mapping["in"] = f'"{operand_names[0]}"'
+@@ -204,6 +220,8 @@ class OracleVisitor(IDLV2Visitor):
+             return []
+ 
+     def visitResult_type(self, ctx: IDLV2Parser.Result_typeContext):
++        if ctx.shape() is None:
++            return (ctx.TYPE().getText(), '')
+         shape_info = self.visit(ctx.shape())
+         shape_dims, shape_type = shape_info
+         return (shape_type, shape_dims)
+diff --git a/taidl_to/templates/templates.txt b/taidl_to/templates/templates.txt
+index 1b592838ce9e75c3c80caf4069913721c050eb76..226d10c3a74187d9b8d2c9093c6e1d9ed22d4d1c 100755
+--- a/taidl_to/templates/templates.txt
++++ b/taidl_to/templates/templates.txt
+@@ -342,11 +342,12 @@ line = f'{lhs_loc} = {lhs_type} slice({in_loc}), {dims}'
+ output.append(line)
+ 
+ ### TEMPLATE: CONCATENATE ###
+-in_loc = parameter_util(global_counters,  attrs, state, lvars, comp_attrs, {{in}})
++a_loc = parameter_util(global_counters, attrs, state, lvars, comp_attrs, {{A}})
++b_loc = parameter_util(global_counters, attrs, state, lvars, comp_attrs, {{B}})
+ lhs_loc, lhs_type = lhs_util(attrs, state, global_counters, lvars, comp_attrs, {{lhs}}, {{type}}, {{size}})
+ dims = "{{{dims}}}"
+ dims = dims.replace("'","")
+-line = f'{lhs_loc} = {lhs_type} concatenate({in_loc}), dimensions={{0}}'
++line = f'{lhs_loc} = {lhs_type} concatenate({a_loc}, {b_loc}), dimensions={dims}'
+ output.append(line)
+ 
+ ### TEMPLATE: ADD ###

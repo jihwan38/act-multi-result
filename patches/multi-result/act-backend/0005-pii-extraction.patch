@@ -1,0 +1,1163 @@
+diff --git a/act_backend/generic/src/isel/extractor/fast.rs b/act_backend/generic/src/isel/extractor/fast.rs
+index 6f5305b5f6f77e23fc0eadd046b5b23b1d4d5a48..361c3d222bdf9747d3074399caa3431c21d768bd 100644
+--- a/act_backend/generic/src/isel/extractor/fast.rs
++++ b/act_backend/generic/src/isel/extractor/fast.rs
+@@ -1,188 +1,113 @@
+-use egg::*;
+-use std::collections::{HashMap, HashSet};
++use egg::{EGraph, Id};
++use std::collections::HashSet;
+ 
++use super::utils::{choices, prepare, value_id, Budget, Selection, ValueKey};
+ use crate::ir::buffer::Buffer;
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+-use crate::ir::pii::PiiGraph;
++use crate::ir::metadata::OutputRoot;
++use crate::ir::pii::{PiiGraph, ValueRef};
+ 
+-use crate::ir::buffer::single_buffer_assignment as get_bufs;
+-use crate::isel::extractor::utils::{annotate_constants, detect_constants, get_hbm_offset};
+-
+-/// Phase 3: Graph Extractor
+-/// Extraction phase to select instructions from the final e-graph.
+-
+-/// Fast linear-time extraction algorithm. Computes one pii graph by visiting each e-class (at most
+-/// once) and adds selected enodes to a `selected` HashSet.
++/// ACT's fast feasibility search, extended to result ports and multiple roots.
++/// Keep the first successful input paths; this is deliberately not exhaustive.
+ pub fn extract_fast(
+-    egraph: &mut EGraph<TensorOp, TensorInfo>,
+-    root: Id,
++    graph: &mut EGraph<TensorOp, TensorInfo>,
++    outputs: &[OutputRoot],
+     inputs: &HashSet<Id>,
+-    hbm_offsets: &Vec<(Option<Id>, i32)>,
++    offsets: &[(Option<Id>, i32)],
+ ) -> Vec<PiiGraph> {
+-    // Bottom-up traversal to detect compile-time constants
+-    let constants = detect_constants(egraph, inputs);
+-    // Annotate the egraph with DetectedConst nodes and mark analysis data.
+-    annotate_constants(egraph, &constants);
++    let (inputs, offsets) = prepare(graph, inputs, offsets);
++    run(graph, outputs, &inputs, &offsets, &mut Budget::new())
++}
+ 
+-    // Top-down traversal to perform extraction
+-    let mut selected: HashMap<TensorOp, (Id, TensorInfo)> = HashMap::new();
+-    let ret = get_pii_graph(
+-        egraph,
+-        root,
+-        Buffer::HBM,
+-        inputs,
+-        &mut HashSet::new(),
+-        &mut selected,
+-    );
+-    if ret {
+-        vec![select2pii_graph(&selected, hbm_offsets, root)]
++pub(super) fn run(
++    graph: &EGraph<TensorOp, TensorInfo>,
++    outputs: &[OutputRoot],
++    inputs: &HashSet<Id>,
++    offsets: &[(Option<Id>, i32)],
++    budget: &mut Budget,
++) -> Vec<PiiGraph> {
++    let mut selected = Selection::default();
++    for output in outputs {
++        let Some(value) = get_pii_graph(
++            graph,
++            output.eclass,
++            Buffer::HBM,
++            Some(output.hbm_offset),
++            inputs,
++            offsets,
++            &mut selected,
++            &mut HashSet::new(),
++            budget,
++        ) else {
++            return vec![];
++        };
++        if !selected.output(value, output.hbm_offset) {
++            return vec![];
++        }
++    }
++    if selected.pii.is_valid() {
++        vec![selected.pii]
+     } else {
+         vec![]
+     }
+ }
+ 
+-/// Pre-order traversal algorithm for extraction.
+-/// Returns true if there exists an extraction rooted at eclass.
+ fn get_pii_graph(
+-    egraph: &EGraph<TensorOp, TensorInfo>,
+-    eclass: Id,
+-    target_buf: Buffer,
++    graph: &EGraph<TensorOp, TensorInfo>,
++    id: Id,
++    buffer: Buffer,
++    address: Option<i32>,
+     inputs: &HashSet<Id>,
+-    path: &mut HashSet<Id>,
+-    selected: &mut HashMap<TensorOp, (Id, TensorInfo)>,
+-) -> bool {
+-    if path.contains(&eclass) {
+-        // no cycles allowed
+-        return false;
++    offsets: &[(Option<Id>, i32)],
++    selected: &mut Selection,
++    path: &mut HashSet<ValueKey>,
++    budget: &mut Budget,
++) -> Option<ValueRef> {
++    if !budget.step() {
++        return None;
+     }
+-
+-    for en in &egraph[eclass].nodes {
+-        if let Some(bufs) = get_bufs(en) {
+-            // memoization case: previously selected enode
+-            // This is where we lose completeness for fast extraction.
+-            if selected.get(en).is_some() && target_buf == bufs[0] {
+-                return true;
+-            }
+-        }
++    let key = (value_id(graph, id), buffer);
++    // A producer selected for an earlier operand can satisfy this demand with
++    // a DIFFERENT result port. Reuse requires the same physical buffer.
++    if let Some(value) = selected.available(key, address).first() {
++        return Some(*value);
+     }
+-
+-    'en_loop: for en in &egraph[eclass].nodes {
+-        // snapshot selected so we can rollback any provisional selections if this enode
+-        // attempt fails (backtracking). This prevents nodes selected while exploring
+-        // a branch that later fails from remaining in `selected`.
++    if !path.insert(key) {
++        return None;
++    }
++    for choice in choices(graph, id, buffer, inputs) {
+         let snapshot = selected.clone();
+-        // Base case: the original HBM input, not another equivalent enode.
+-        if inputs.contains(&eclass) && target_buf == Buffer::HBM
+-            && matches!(en, TensorOp::Var(_))
+-        {
+-            selected.insert(en.clone(), (eclass, egraph[eclass].data.clone()));
+-            return true;
+-        }
+-        // base case: detected constant enode
+-        if egraph[eclass].data.is_const && en.is_detected_const() && target_buf == Buffer::HBM {
+-            selected.insert(en.clone(), (eclass, egraph[eclass].data.clone()));
+-            return true;
+-        }
+-
+-        // only consider instruction enodes
+-        if let Some(bufs) = get_bufs(en) {
+-            if bufs[0] != Buffer::ANY && bufs[0] != target_buf {
+-                continue;
+-            }
+-
+-            path.insert(eclass);
+-            for (i, child_ec) in en.children().iter().enumerate() {
+-                let out_buf = if bufs[0] != Buffer::ANY {
+-                    bufs[1 + i]
+-                } else {
+-                    target_buf
+-                };
+-                if !get_pii_graph(egraph, *child_ec, out_buf, inputs, path, selected) {
+-                    // rollback any selections that happened while attempting this enode
+-                    selected.clear();
+-                    for (k, v) in snapshot.iter() {
+-                        selected.insert(k.clone(), v.clone());
+-                    }
+-                    // remove current eclass from path before trying next enode
+-                    path.remove(&eclass);
+-                    continue 'en_loop;
+-                }
++        let mut children = vec![];
++        let mut success = true;
++        for &(input, required) in &choice.inputs {
++            if let Some(value) = get_pii_graph(
++                graph, input, required, None, inputs, offsets, selected, path, budget,
++            ) {
++                children.push(value);
++            } else {
++                success = false;
++                break;
+             }
+-            path.remove(&eclass);
+-
+-            selected.insert(en.clone(), (eclass, egraph[eclass].data.clone()));
+-            return true;
+         }
+-    }
+-    false
+-}
+-
+-/// Convert a HashSet of selected e-nodes into a pii graph.
+-/// Algorithm builds the pii graph bottom-up in topological order.
+-fn select2pii_graph(
+-    selected: &HashMap<TensorOp, (Id, TensorInfo)>,
+-    hbm_offsets: &Vec<(Option<Id>, i32)>,
+-    root: Id,
+-) -> PiiGraph {
+-    let mut pii_graph = PiiGraph::default();
+-
+-    let mut to_remove: Vec<TensorOp> = vec![];
+-    // map selected enode's eclass -> node index in pii graph
+-    let mut eclass_map: HashMap<Id, usize> = HashMap::new();
+-
+-    // Add leaf enodes to the pii graph
+-    for (en, (ec_id, info)) in selected.iter() {
+-        if en.is_leaf() {
+-            let new_id = pii_graph.add_node(
+-                en.clone(),
+-                info.clone(),
+-                vec![],
+-                get_hbm_offset(hbm_offsets, *ec_id),
+-            );
+-            eclass_map.insert(*ec_id, new_id);
+-            to_remove.push(en.clone());
+-        }
+-    }
+-
+-    // Add first candidate enode to the pii graph
+-    while to_remove.len() < selected.len() {
+-        let mut progress = false;
+-        for (en, (ec_id, info)) in selected.iter() {
+-            if to_remove.contains(en) {
+-                continue;
+-            }
+-            if en
+-                .children()
+-                .iter()
+-                .all(|child_ec| eclass_map.contains_key(child_ec))
+-            {
+-                let children: Vec<usize> = en
+-                    .children()
+-                    .iter()
+-                    .map(|child_ec| *eclass_map.get(child_ec).unwrap())
+-                    .collect();
+-                let new_id = pii_graph.add_node(
+-                    en.clone(),
+-                    info.clone(),
+-                    children,
+-                    get_hbm_offset(hbm_offsets, *ec_id),
+-                );
+-                eclass_map.insert(*ec_id, new_id);
+-                to_remove.push(en.clone());
+-                progress = true;
+-                break;
++        if success {
++            let value = selected.add(&choice, children, key, offsets);
++            if address.is_none_or(|addr| {
++                selected
++                    .pii
++                    .result(value)
++                    .hbm_offset
++                    .is_none_or(|old| old == addr)
++            }) {
++                path.remove(&key);
++                return Some(value);
+             }
+         }
+-        if !progress {
+-            // This should not happen: `selected` is expected to be topologically closed
+-            // (all children of selected nodes are also selected). Treat this as a bug.
+-            debug_assert!(false, "select2pii_graph: possible infinite loop");
++        // Roll back the whole instruction and ALL its result bindings.
++        *selected = snapshot;
++        if budget.exhausted {
+             break;
+         }
+     }
+-
+-    if let Some(&id) = eclass_map.get(&root) {
+-        pii_graph.outputs.push(crate::ir::pii::ValueRef::single(id));
+-    }
+-    pii_graph
++    path.remove(&key);
++    None
+ }
+diff --git a/act_backend/generic/src/isel/extractor/lib.rs b/act_backend/generic/src/isel/extractor/lib.rs
+index f89a165a0f471474ecaafc128ee9db400ad86fc7..2fcf4df921eec40ff295e6ef15fbb33f6744cb48 100644
+--- a/act_backend/generic/src/isel/extractor/lib.rs
++++ b/act_backend/generic/src/isel/extractor/lib.rs
+@@ -1,53 +1,57 @@
++use egg::{EGraph, Id};
+ use std::collections::HashSet;
+ use std::time::Instant;
+ 
+-use egg::{EGraph, Id};
+-
++use super::utils::{prepare, Budget};
+ use crate::ir::egraph::{TensorInfo, TensorOp};
++use crate::ir::metadata::OutputRoot;
+ use crate::ir::pii::PiiGraph;
+-
+-use crate::isel::extractor::fast::extract_fast;
+-use crate::isel::extractor::slow::extract_slow;
+-
+ use crate::SLOW_LIMIT_CUTOFF;
+ 
++/// There are exactly two searches: ACT fast and ACT bounded slow. Both accept
++/// all program outputs and both select scalar or multi-result instructions.
+ pub fn extract(
+-    egraph: &mut EGraph<TensorOp, TensorInfo>,
+-    root: Id,
++    graph: &mut EGraph<TensorOp, TensorInfo>,
++    outputs: &[OutputRoot],
+     inputs: &HashSet<Id>,
+-    hbm_offsets: &Vec<(Option<Id>, i32)>,
++    offsets: &Vec<(Option<Id>, i32)>,
+     limit: usize,
+ ) -> Vec<PiiGraph> {
+-    let nodes = egraph.total_number_of_nodes();
+-
+     let start = Instant::now();
+-    let mut piis_fast = extract_fast(egraph, root, &inputs, &hbm_offsets);
+-
+-    println!("Fast Extractor Algorithm over #nodes={}", nodes);
+-    println!("Number of PII graphs extracted: {}", piis_fast.len());
++    let mut budget = Budget::new();
++    let (inputs, offsets) = prepare(graph, inputs, offsets);
++    let mut fast = super::fast::run(graph, outputs, &inputs, &offsets, &mut budget);
++    println!(
++        "Fast Extractor Algorithm over #nodes={}",
++        graph.total_number_of_nodes()
++    );
++    println!("Number of PII graphs extracted: {}", fast.len());
+     println!("Extraction time: {:?}", start.elapsed());
+-
+-    println!();
+-
+-    let mut piis_slow: Vec<PiiGraph> = vec![];
+     if limit <= SLOW_LIMIT_CUTOFF {
+         let start = Instant::now();
+-        piis_slow = extract_slow(egraph, root, &inputs, &hbm_offsets, limit);
+-
+-        println!("Slow Extractor Algorithm over #nodes={}", nodes);
+-        println!("Limit used: {}", limit);
+-        println!("Number of PII graphs extracted: {}", piis_slow.len());
++        let mut slow = super::slow::run(graph, outputs, &inputs, &offsets, limit, &mut budget);
++        println!(
++            "Slow Extractor Algorithm over #nodes={}",
++            graph.total_number_of_nodes()
++        );
++        println!(
++            "Limit used per output DAG (including input nodes): {}",
++            limit
++        );
++        println!("Number of PII graphs extracted: {}", slow.len());
+         println!("Extraction time: {:?}", start.elapsed());
++        fast.append(&mut slow);
+     } else {
+         println!(
+             "Skipping Slow Extractor Algorithm (limit = {} > {})",
+             limit, SLOW_LIMIT_CUTOFF
+         );
+     }
+-
+-    println!();
+-
+-    piis_fast.append(&mut piis_slow);
+-
+-    piis_fast
++    let mut seen = HashSet::new();
++    fast.retain(|pii| seen.insert(pii.to_string()));
++    println!(
++        "ACT extraction budget: visits={}, exhausted={}",
++        budget.visits, budget.exhausted
++    );
++    fast
+ }
+diff --git a/act_backend/generic/src/isel/extractor/mod.rs b/act_backend/generic/src/isel/extractor/mod.rs
+index 71d28d0269827524c325c887d3b8234e797a9203..ba965c678583681029aff954315e7b06ab4e8566 100644
+--- a/act_backend/generic/src/isel/extractor/mod.rs
++++ b/act_backend/generic/src/isel/extractor/mod.rs
+@@ -4,3 +4,5 @@ mod slow;
+ mod utils;
+ 
+ pub use lib::extract;
++pub use fast::extract_fast;
++pub use slow::extract_slow;
+diff --git a/act_backend/generic/src/isel/extractor/slow.rs b/act_backend/generic/src/isel/extractor/slow.rs
+index af3851c98007912a643ad318441cc579750602d4..79fee9ebcadb675eaf26eba3ae16f2f2da5445b6 100644
+--- a/act_backend/generic/src/isel/extractor/slow.rs
++++ b/act_backend/generic/src/isel/extractor/slow.rs
+@@ -1,281 +1,179 @@
+-use egg::*;
+-use itertools::Itertools;
+-use std::collections::{HashMap, HashSet};
++use egg::{EGraph, Id};
++use std::collections::HashSet;
+ 
++use super::utils::{choices, prepare, value_id, Budget, Selection, ValueKey};
+ use crate::ir::buffer::Buffer;
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+-use crate::ir::pii::PiiGraph;
++use crate::ir::metadata::OutputRoot;
++use crate::ir::pii::{PiiGraph, ValueRef};
+ 
+-use crate::ir::buffer::single_buffer_assignment as get_bufs;
+-use crate::isel::extractor::utils::{annotate_constants, detect_constants, get_hbm_offset};
+-
+-/// Phase 3: Graph Extractor
+-/// Extraction phase to select instructions from the final e-graph.
+-
+-/// Slow exponential-time extraction algorithm. Computes all pii graphs with up to `limit` e-nodes
+-/// by obtaining full extraction trees and collapsing them with GVN.
++/// ACT's bounded alternative enumeration, generalized from scalar extraction
++/// trees to shared instruction DAGs. Both scalar and multi-result choices use
++/// this same traversal. References to another result do not duplicate a node.
+ pub fn extract_slow(
+-    egraph: &mut EGraph<TensorOp, TensorInfo>,
+-    root: Id,
++    graph: &mut EGraph<TensorOp, TensorInfo>,
++    outputs: &[OutputRoot],
+     inputs: &HashSet<Id>,
+-    hbm_offsets: &Vec<(Option<Id>, i32)>,
++    offsets: &[(Option<Id>, i32)],
+     limit: usize,
+ ) -> Vec<PiiGraph> {
+-    // Bottom-up traversal to detect compile-time constants
+-    let constants = detect_constants(egraph, inputs);
+-    // Annotate the egraph with DetectedConst nodes and mark analysis data.
+-    annotate_constants(egraph, &constants);
+-
+-    // Top-down traversal to perform extraction
+-    let trees = get_extraction_trees(egraph, root, Buffer::HBM, limit, inputs);
+-    let mut piis = vec![];
+-    if !trees.is_empty() {
+-        for tree in trees.iter() {
+-            let (mut child_map, mut parent_map) = get_edges(tree);
+-            let extractions = get_extractions(tree, &mut child_map, &mut parent_map);
+-            for extraction in extractions.iter() {
+-                // convert an Extraction into a PiiGraph
+-                piis.push(extraction_to_piigraph(extraction, hbm_offsets, egraph));
+-            }
+-        }
+-        piis
+-    } else {
+-        vec![]
+-    }
+-}
+-
+-#[derive(Debug, Clone, PartialEq, Eq)]
+-struct Extraction {
+-    tree: Vec<TensorOp>,
+-    children: HashMap<usize, Vec<usize>>,
+-    parent: HashMap<usize, Option<usize>>,
++    let (inputs, offsets) = prepare(graph, inputs, offsets);
++    run(graph, outputs, &inputs, &offsets, limit, &mut Budget::new())
+ }
+ 
+-/// Pre-order traversal algorithm for extraction.
+-/// Returns a list of extractions (set of enodes).
+-fn get_extraction_trees(
+-    egraph: &EGraph<TensorOp, TensorInfo>,
+-    eclass: Id,
+-    target_buf: Buffer,
+-    limit: usize,
++pub(super) fn run(
++    graph: &EGraph<TensorOp, TensorInfo>,
++    outputs: &[OutputRoot],
+     inputs: &HashSet<Id>,
+-) -> Vec<Vec<TensorOp>> {
+-    let mut trees = vec![];
+-    if limit == 0 {
+-        return trees;
+-    }
+-
+-    for en in &egraph[eclass].nodes {
+-        // Base case: the original HBM input, not another equivalent enode.
+-        if inputs.contains(&eclass) && target_buf == Buffer::HBM
+-            && matches!(en, TensorOp::Var(_))
+-        {
+-            trees.push(vec![en.clone()]);
+-            break;
+-        }
+-        // base case: detected constant enode
+-        if egraph[eclass].data.is_const && en.is_detected_const() && target_buf == Buffer::HBM {
+-            trees.push(vec![en.clone()]);
+-            break;
+-        }
+-        // only consider instruction enodes
+-        if let Some(bufs) = get_bufs(en) {
+-            if bufs[0] != Buffer::ANY && bufs[0] != target_buf {
+-                continue;
+-            }
+-
+-            let mut child_trees = vec![];
+-            for (i, child_ec) in en.children().iter().enumerate() {
+-                let out_buf = if bufs[0] != Buffer::ANY {
+-                    bufs[1 + i]
+-                } else {
+-                    target_buf
+-                };
+-                if limit >= en.num_children() {
+-                    child_trees.push(get_extraction_trees(
+-                        egraph,
+-                        *child_ec,
+-                        out_buf,
+-                        limit - en.num_children(),
+-                        inputs,
+-                    ));
+-                } else {
+-                    child_trees = vec![vec![]];
+-                    break;
+-                }
+-            }
+-            // merge all combinations of child extractions and add en
+-            if child_trees.iter().all(|x| !x.is_empty()) {
+-                for combination in child_trees.into_iter().multi_cartesian_product() {
+-                    let child_trees: Vec<TensorOp> = combination.into_iter().flatten().collect();
+-                    let mut tree = vec![en.clone()];
+-                    tree.extend(child_trees);
+-                    if tree.len() <= limit {
+-                        trees.push(tree);
+-                    }
+-                }
+-            }
+-        }
++    offsets: &[(Option<Id>, i32)],
++    limit: usize,
++    budget: &mut Budget,
++) -> Vec<PiiGraph> {
++    if outputs.is_empty() {
++        return vec![PiiGraph::default()];
+     }
+-    trees
++    let mut search = Search {
++        graph,
++        inputs,
++        offsets,
++        budget,
++        output_limit: limit,
++        node_limit: limit.saturating_mul(outputs.len()),
++        seen: HashSet::new(),
++        results: vec![],
++    };
++    search.outputs(outputs, Selection::default());
++    search.results
+ }
+ 
+-/// Given a preorder extraction tree, recover the parent/child edges between nodes.
+-fn get_edges(tree: &Vec<TensorOp>) -> (HashMap<usize, Vec<usize>>, HashMap<usize, Option<usize>>) {
+-    let mut children = HashMap::new();
+-    let mut parent = HashMap::new();
+-    let mut stack = vec![];
+-
+-    for i in 0..tree.len() {
+-        children.insert(i, vec![]);
+-        parent.insert(i, None);
+-    }
+-
+-    for i in 0..tree.len() {
+-        if let Some(top) = stack.last() {
+-            children.get_mut(top).unwrap().push(i);
+-            *parent.get_mut(&i).unwrap() = Some(*top);
+-        }
+-        stack.push(i);
+-        if tree[i].is_leaf() {
+-            loop {
+-                if let Some(top) = stack.last() {
+-                    if children[top].len() == tree[*top].num_children() {
+-                        stack.pop();
+-                    } else {
+-                        break;
+-                    }
+-                } else {
+-                    break;
+-                }
+-            }
+-        }
+-    }
+-    (children, parent)
++struct Search<'a, 'b> {
++    graph: &'a EGraph<TensorOp, TensorInfo>,
++    inputs: &'a HashSet<Id>,
++    offsets: &'a [(Option<Id>, i32)],
++    budget: &'b mut Budget,
++    output_limit: usize,
++    node_limit: usize,
++    seen: HashSet<String>,
++    results: Vec<PiiGraph>,
+ }
+ 
+-/// Perform GVN on an extraction tree to collapse equivalent subtrees.
+-fn get_extractions(
+-    tree: &Vec<TensorOp>,
+-    child_map: &mut HashMap<usize, Vec<usize>>,
+-    parent_map: &mut HashMap<usize, Option<usize>>,
+-) -> Vec<Extraction> {
+-    let mut extractions = vec![];
+-    let mut gvn_map = HashMap::new(); // node -> num
+-    let mut idx_map = HashMap::new(); // node -> index in tree
+-    let mut num = 0;
+-    let mut processed = vec![false; tree.len()];
+-
+-    // all duplicate leaf nodes must be collapsed
+-    for (i, node) in tree.iter().enumerate() {
+-        if node.is_leaf() {
+-            if !gvn_map.contains_key(node) {
+-                gvn_map.insert(node.clone(), num);
+-                num += 1;
+-                idx_map.insert(node.clone(), i);
+-            } else {
+-                if let Some(parent) = parent_map[&i] {
+-                    let siblings = child_map.get_mut(&parent).unwrap();
+-                    let child_idx = siblings.iter_mut().position(|x| *x == i).unwrap();
+-                    siblings[child_idx] = idx_map[node];
+-                    parent_map.insert(i, None);
+-                }
++impl Search<'_, '_> {
++    fn outputs(&mut self, outputs: &[OutputRoot], selected: Selection) {
++        if outputs.is_empty() {
++            if selected.pii.is_valid() && self.seen.insert(selected.pii.to_string()) {
++                self.results.push(selected.pii);
+             }
+-            processed[i] = true;
++            return;
+         }
+-    }
+-    extractions.push(Extraction {
+-        tree: tree.clone(),
+-        parent: parent_map.clone(),
+-        children: child_map.clone(),
+-    });
+-
+-    while processed.iter().any(|&x| !x) {
+-        for (i, node) in tree.iter().enumerate() {
+-            // process node when all of its children have been processed
+-            let children = &child_map[&i];
+-            if children.iter().all(|&x| processed[x]) && !processed[i] {
+-                if !gvn_map.contains_key(node) {
+-                    gvn_map.insert(node.clone(), num);
+-                    num += 1;
+-                    idx_map.insert(node.clone(), i);
+-                } else {
+-                    // found duplicate node, so collapse
+-                    if let Some(parent) = parent_map[&i] {
+-                        let siblings = child_map.get_mut(&parent).unwrap();
+-                        let child_idx = siblings.iter_mut().position(|x| *x == i).unwrap();
+-                        siblings[child_idx] = idx_map[node];
+-                        parent_map.insert(i, None);
+-                        extractions.push(Extraction {
+-                            tree: tree.clone(),
+-                            parent: parent_map.clone(),
+-                            children: child_map.clone(),
+-                        });
+-                    }
++        let output = &outputs[0];
++        // New nodes while building this root all belong to its output DAG.
++        // Reject oversized partial paths, rather than discovering the per-root
++        // violation only after enumerating a whole program-sized subtree.
++        let max_nodes = self
++            .node_limit
++            .min(selected.pii.nodes.len() + self.output_limit);
++        self.value(
++            output.eclass,
++            Buffer::HBM,
++            Some(output.hbm_offset),
++            selected,
++            0,
++            max_nodes,
++            &mut |search, mut next, value| {
++                if next.output_size(value) <= search.output_limit
++                    && next.output(value, output.hbm_offset)
++                {
++                    search.outputs(&outputs[1..], next);
+                 }
+-                processed[i] = true;
+-            }
+-        }
++            },
++        );
+     }
+ 
+-    extractions
+-}
+-
+-// Convert an Extraction into a PiiGraph.
+-fn extraction_to_piigraph(
+-    extraction: &Extraction,
+-    hbm_offsets: &Vec<(Option<Id>, i32)>,
+-    egraph: &EGraph<TensorOp, TensorInfo>,
+-) -> PiiGraph {
+-    let mut pii = PiiGraph::default();
+-
+-    // Build a postorder traversal starting from root index 0 using the extraction's children map.
+-    let mut postorder: Vec<usize> = Vec::new();
+-    let mut visited: HashSet<usize> = HashSet::new();
+-
+-    fn dfs(
+-        idx: usize,
+-        extraction: &Extraction,
+-        visited: &mut HashSet<usize>,
+-        post: &mut Vec<usize>,
++    fn value(
++        &mut self,
++        id: Id,
++        buffer: Buffer,
++        address: Option<i32>,
++        selected: Selection,
++        reserved: usize,
++        max_nodes: usize,
++        accept: &mut dyn FnMut(&mut Self, Selection, ValueRef),
+     ) {
+-        if visited.contains(&idx) {
++        if !self.budget.step() || selected.pii.nodes.len() + reserved > max_nodes {
+             return;
+         }
+-        visited.insert(idx);
+-        if let Some(children) = extraction.children.get(&idx) {
+-            for &c in children.iter() {
+-                dfs(c, extraction, visited, post);
++        let key = (value_id(self.graph, id), buffer);
++        let available = selected.available(key, address);
++        for &value in &available {
++            accept(self, selected.clone(), value);
++            if self.budget.exhausted {
++                return;
+             }
+         }
+-        post.push(idx);
+-    }
+-
+-    if !extraction.tree.is_empty() {
+-        dfs(0, extraction, &mut visited, &mut postorder);
+-    }
+-
+-    // Map tree index -> Pii node id
+-    let mut idx_map: HashMap<usize, usize> = HashMap::new();
+-
+-    for idx in postorder.into_iter() {
+-        let op = extraction.tree[idx].clone();
+-        let child_tree_idxs = extraction.children.get(&idx).cloned().unwrap_or_default();
+-        let mut child_node_ids: Vec<usize> = Vec::with_capacity(child_tree_idxs.len());
+-        for ti in child_tree_idxs.iter() {
+-            if let Some(&nid) = idx_map.get(ti) {
+-                child_node_ids.push(nid);
++        // Original HBM inputs are one physical value. Instructions, unlike
++        // inputs, may also be recomputed to shorten lifetimes for allocation.
++        if !available.is_empty() && self.inputs.contains(&key.0) {
++            return;
++        }
++        if selected.pii.nodes.len() + reserved >= max_nodes {
++            return;
++        }
++        for choice in choices(self.graph, id, buffer, self.inputs) {
++            // Reserve a node BEFORE descending: e-graph copy/identity cycles
++            // remain enumerable without allowing an unbounded recursive walk.
++            self.arguments(
++                &choice.inputs,
++                selected.clone(),
++                reserved + 1,
++                max_nodes,
++                vec![],
++                &mut |search, mut next, children| {
++                    let value = next.add(&choice, children, key, search.offsets);
++                    if address.is_none_or(|addr| {
++                        next.pii
++                            .result(value)
++                            .hbm_offset
++                            .is_none_or(|old| old == addr)
++                    }) {
++                        accept(search, next, value);
++                    }
++                },
++            );
++            if self.budget.exhausted {
++                return;
+             }
+         }
+-
+-        let ec_id = egraph.lookup(op.clone()).unwrap();
+-        let info = egraph[ec_id].data.clone();
+-        let node_id = pii.add_node(op, info, child_node_ids, get_hbm_offset(hbm_offsets, ec_id));
+-        idx_map.insert(idx, node_id);
+     }
+ 
+-    if let Some(&id) = idx_map.get(&0) {
+-        pii.outputs.push(crate::ir::pii::ValueRef::single(id));
++    fn arguments(
++        &mut self,
++        inputs: &[ValueKey],
++        selected: Selection,
++        reserved: usize,
++        max_nodes: usize,
++        children: Vec<ValueRef>,
++        accept: &mut dyn FnMut(&mut Self, Selection, Vec<ValueRef>),
++    ) {
++        if inputs.is_empty() {
++            accept(self, selected, children);
++            return;
++        }
++        let (id, buffer) = inputs[0];
++        self.value(
++            id,
++            buffer,
++            None,
++            selected,
++            reserved,
++            max_nodes,
++            &mut |search, next, value| {
++                let mut children = children.clone();
++                children.push(value);
++                // Carry the SAME selection into the next operand. Completing a
++                // multi-result producer for operand 0 makes every port available
++                // while enumerating operand 1 and later program outputs.
++                search.arguments(&inputs[1..], next, reserved, max_nodes, children, accept);
++            },
++        );
+     }
+-    pii
+ }
+diff --git a/act_backend/generic/src/isel/extractor/utils.rs b/act_backend/generic/src/isel/extractor/utils.rs
+index c9fd396d4e1d33c118d6dd86408ee69fb764bc5b..f9734373127b8eba185c3f1bb2a76a9dc82e0fd3 100644
+--- a/act_backend/generic/src/isel/extractor/utils.rs
++++ b/act_backend/generic/src/isel/extractor/utils.rs
+@@ -1,7 +1,280 @@
+ use egg::*;
+-use std::collections::{HashSet, VecDeque};
++use std::collections::{HashMap, HashSet, VecDeque};
++use std::time::{Duration, Instant};
+ 
++use crate::ir::buffer::{buffer_signature, Buffer};
+ use crate::ir::egraph::*;
++use crate::ir::pii::{PiiGraph, ValueRef};
++
++pub(super) type ValueKey = (Id, Buffer);
++
++/// Pure bookkeeping shared by fast/slow; this module does not run a search.
++#[derive(Clone, Default)]
++pub(super) struct Selection {
++    pub pii: PiiGraph,
++    pub values: HashMap<ValueKey, Vec<ValueRef>>,
++}
++
++impl Selection {
++    pub fn available(&self, key: ValueKey, address: Option<i32>) -> Vec<ValueRef> {
++        self.values
++            .get(&key)
++            .into_iter()
++            .flatten()
++            .copied()
++            .filter(|&value| {
++                address.is_none_or(|address| {
++                    self.pii
++                        .result(value)
++                        .hbm_offset
++                        .is_none_or(|old| old == address)
++                })
++            })
++            .collect()
++    }
++
++    pub fn add(
++        &mut self,
++        choice: &Choice,
++        children: Vec<ValueRef>,
++        requested: ValueKey,
++        offsets: &[(Option<Id>, i32)],
++    ) -> ValueRef {
++        let values = self
++            .pii
++            .add_instruction(choice.op.clone(), choice.infos.clone(), children);
++        if choice.op.is_leaf() {
++            self.pii.result_mut(values[0]).hbm_offset = offsets
++                .iter()
++                .find_map(|(id, address)| (*id == Some(requested.0)).then_some(*address));
++        }
++        for (&key, &value) in choice.outputs.iter().zip(&values) {
++            self.values.entry(key).or_default().push(value);
++        }
++        let value = values[choice.result];
++        if choice.outputs[choice.result] != requested {
++            self.values.entry(requested).or_default().push(value);
++        }
++        value
++    }
++
++    pub fn output(&mut self, value: ValueRef, address: i32) -> bool {
++        if self.pii.result(value).buffer != Buffer::HBM
++            || self
++                .pii
++                .result(value)
++                .hbm_offset
++                .is_some_and(|old| old != address)
++        {
++            return false;
++        }
++        self.pii.result_mut(value).hbm_offset = Some(address);
++        self.pii.outputs.push(value);
++        true
++    }
++
++    pub fn output_size(&self, value: ValueRef) -> usize {
++        let mut reached = HashSet::new();
++        let mut pending = vec![value.node];
++        while let Some(node) = pending.pop() {
++            if reached.insert(node) {
++                pending.extend(self.pii.nodes[node].children.iter().map(|v| v.node));
++            }
++        }
++        reached.len()
++    }
++}
++
++/// One physical instruction candidate and the result satisfying a demand.
++/// Selecting it retains ALL results, including results not consumed later.
++#[derive(Clone)]
++pub(super) struct Choice {
++    pub op: TensorOp,
++    pub inputs: Vec<ValueKey>,
++    pub outputs: Vec<ValueKey>,
++    pub infos: Vec<TensorInfo>,
++    pub result: usize,
++}
++
++/// Look through logical projections without deleting their ISA alternatives.
++pub(super) fn value_id(graph: &EGraph<TensorOp, TensorInfo>, id: Id) -> Id {
++    let mut id = graph.find(id);
++    let mut seen = HashSet::new();
++    while seen.insert(id) {
++        let next = graph[id].nodes.iter().find_map(|op| {
++            if let TensorOp::OpGetTupleElement(index, [tuple]) = op {
++                let child = graph.find(*tuple_elements(graph, *tuple)?.get(*index)?);
++                (child != id && !seen.contains(&child)).then_some(child)
++            } else {
++                None
++            }
++        });
++        let Some(next) = next else {
++            break;
++        };
++        id = next;
++    }
++    id
++}
++
++pub(super) fn choices(
++    graph: &EGraph<TensorOp, TensorInfo>,
++    id: Id,
++    buffer: Buffer,
++    inputs: &HashSet<Id>,
++) -> Vec<Choice> {
++    fn push(
++        graph: &EGraph<TensorOp, TensorInfo>,
++        op: &TensorOp,
++        elements: &[Id],
++        result: usize,
++        buffer: Buffer,
++        inputs: &HashSet<Id>,
++        out: &mut Vec<Choice>,
++    ) {
++        let Some(sig) = buffer_signature(op) else {
++            return;
++        };
++        if sig.outputs.len() != elements.len()
++            || result >= sig.outputs.len()
++            || sig.inputs.len() != op.children().len()
++            || (sig.outputs[result] != buffer && sig.outputs[result] != Buffer::ANY)
++            || elements
++                .iter()
++                .any(|&id| tuple_elements(graph, id).is_some())
++        {
++            return;
++        }
++        if op.is_leaf()
++            && !(buffer == Buffer::HBM
++                && ((inputs.contains(&graph.find(elements[0])) && matches!(op, TensorOp::Var(_)))
++                    || (graph[elements[0]].data.is_const && op.is_detected_const())))
++        {
++            return;
++        }
++        // ANY is the existing scalar slice/concat view, not an unspecified
++        // placement for independent result ports.
++        if sig.outputs.len() > 1
++            && (sig.outputs.contains(&Buffer::ANY) || sig.inputs.contains(&Buffer::ANY))
++        {
++            return;
++        }
++        if out.iter().any(|old| old.op == *op && old.result == result) {
++            return;
++        }
++        let resolve = |b| if b == Buffer::ANY { buffer } else { b };
++        out.push(Choice {
++            op: op.clone(),
++            result,
++            inputs: op
++                .children()
++                .iter()
++                .zip(&sig.inputs)
++                .map(|(&id, &buf)| (graph.find(id), resolve(buf)))
++                .collect(),
++            outputs: elements
++                .iter()
++                .zip(&sig.outputs)
++                .map(|(&id, &buf)| (value_id(graph, id), resolve(buf)))
++                .collect(),
++            infos: elements.iter().map(|&id| graph[id].data.clone()).collect(),
++        });
++    }
++    fn visit(
++        graph: &EGraph<TensorOp, TensorInfo>,
++        id: Id,
++        buffer: Buffer,
++        inputs: &HashSet<Id>,
++        seen: &mut HashSet<Id>,
++        out: &mut Vec<Choice>,
++    ) {
++        let id = graph.find(id);
++        if !seen.insert(id) {
++            return;
++        }
++        for op in &graph[id].nodes {
++            if let TensorOp::OpGetTupleElement(index, [tuple]) = op {
++                let tuple = graph.find(*tuple);
++                let Some(elements) = tuple_elements(graph, tuple) else {
++                    continue;
++                };
++                let Some(&child) = elements.get(*index) else {
++                    continue;
++                };
++                for producer in &graph[tuple].nodes {
++                    if buffer_signature(producer).is_some_and(|sig| sig.outputs.len() > 1) {
++                        push(graph, producer, &elements, *index, buffer, inputs, out);
++                    }
++                }
++                visit(graph, child, buffer, inputs, seen, out);
++            } else if buffer_signature(op).is_some_and(|sig| sig.outputs.len() == 1) {
++                push(graph, op, &[id], 0, buffer, inputs, out);
++            }
++        }
++    }
++    let mut out = vec![];
++    visit(graph, id, buffer, inputs, &mut HashSet::new(), &mut out);
++    out
++}
++
++/// A bounded run reports exhaustion, never claims complete enumeration after
++/// a timeout. Fast and slow share this budget when called by extract().
++pub(super) struct Budget {
++    pub visits: usize,
++    pub exhausted: bool,
++    visit_limit: usize,
++    deadline: Instant,
++}
++
++impl Budget {
++    pub fn new() -> Self {
++        let millis = std::env::var("ACT_PII_TIME_MS")
++            .ok()
++            .map(|x| x.parse().expect("Invalid extraction time limit"))
++            .unwrap_or(500);
++        Self {
++            visits: 0,
++            exhausted: false,
++            visit_limit: std::env::var("ACT_PII_VISITS")
++                .ok()
++                .map(|x| x.parse().expect("Invalid extraction visit limit"))
++                .unwrap_or(100_000),
++            deadline: Instant::now() + Duration::from_millis(millis),
++        }
++    }
++
++    pub fn step(&mut self) -> bool {
++        if self.visits >= self.visit_limit || Instant::now() >= self.deadline {
++            self.exhausted = true;
++            return false;
++        }
++        self.visits += 1;
++        true
++    }
++}
++
++pub(super) fn prepare(
++    graph: &mut EGraph<TensorOp, TensorInfo>,
++    inputs: &HashSet<Id>,
++    offsets: &[(Option<Id>, i32)],
++) -> (HashSet<Id>, Vec<(Option<Id>, i32)>) {
++    graph.rebuild();
++    let inputs: HashSet<_> = inputs.iter().map(|&id| graph.find(id)).collect();
++    let constants = detect_constants(graph, &inputs);
++    annotate_constants(graph, &constants);
++    graph.rebuild();
++    let inputs: HashSet<_> = inputs.iter().map(|&id| graph.find(id)).collect();
++    let offsets = offsets
++        .iter()
++        .filter_map(|(id, addr)| {
++            let id = graph.find((*id)?);
++            inputs
++                .contains(&id)
++                .then_some((Some(value_id(graph, id)), *addr))
++        })
++        .collect();
++    (inputs, offsets)
++}
+ 
+ /// Worklist algorithm for compile-time detection of constants.
+ /// Marks e-classes as const (updates analysis data), inserts a DetectedConst enode
+@@ -28,7 +301,7 @@ pub fn detect_constants(
+         // A tuple is a structured value, not a byte tensor for DetectedConst.
+         // Its tensor elements may still be folded independently, wherever the
+         // tuple occurs (including intermediate and unused tuple expressions).
+-        if egraph[eclass].nodes.iter().any(|en| matches!(en, TensorOp::OpTuple(_))) {
++        if tuple_elements(egraph, eclass).is_some() {
+             continue;
+         }
+ 
+@@ -122,8 +395,7 @@ fn op_repr_en(
+         | TensorOp::OpShiftRightLogical(_)
+         | TensorOp::OpSlice(_, _)
+         | TensorOp::OpXor(_)
+-        | TensorOp::OpTranspose(_, _)
+-         => format!("{}", en),
++        | TensorOp::OpTranspose(_, _) => format!("{}", en),
+         _ => return None,
+     };
+     let children_ids = en.children();
+@@ -142,12 +414,3 @@ fn op_repr_en(
+ 
+     Some(format!("{}({})", label, parts.join(", ")))
+ }
+-
+-pub fn get_hbm_offset(hbm_offsets: &Vec<(Option<Id>, i32)>, eclass: Id) -> Option<i32> {
+-    for (buf_ec, offset) in hbm_offsets.iter() {
+-        if buf_ec.is_some() && buf_ec.unwrap() == eclass {
+-            return Some(*offset);
+-        }
+-    }
+-    None
+-}
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+index d69c07763290d94c44cc49f5f9cc7781ed9ecd30..86e93f5ccca864501d790278d1dd1ee7d97982a3 100644
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -319,6 +319,7 @@ fn main() {
+     let rules = isel::rewrites::get_rewrites();
+     let inputs_for_hook = inputs.clone();
+     let hbm_offsets_for_hook = hbm_offsets.clone();
++    let outputs_for_hook = outputs.clone();
+ 
+     let output_path_for_hook = output_path.clone();
+     let log_dir_for_hook = log_dir.clone();
+@@ -355,7 +356,7 @@ fn main() {
+ 
+                     let piis = isel::extractor::extract(
+                         &mut runner.egraph.clone(),
+-                        root,
++                        &outputs_for_hook,
+                         &inputs_for_hook,
+                         &hbm_offsets_for_hook,
+                         limit,
+@@ -426,7 +427,7 @@ fn main() {
+ 
+                 let piis = isel::extractor::extract(
+                     &mut runner.egraph.clone(),
+-                    root,
++                    &outputs,
+                     &inputs,
+                     &hbm_offsets,
+                     limit,

@@ -1,0 +1,10 @@
+taidl/0001-semantic-interface.patch
+act-backend/0001-isa-rewrites.patch
+act-backend/0002-hlo-tuples.patch
+act-backend/0003-isa-candidates.patch
+act-backend/0004-pii-model.patch
+act-backend/0005-pii-extraction.patch
+act-backend/0006-pii-to-assembly.patch
+act-backend/0007-candidate-evaluation.patch
+act-oracle/0001-isa-codegen.patch
+act-oracle/0002-hlo-tuples.patch
