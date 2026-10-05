@@ -423,6 +423,123 @@ fn repeated_refresh_respects_zero_and_global_candidate_limits_and_deadlines() {
 }
 
 #[test]
+fn discovery_preserves_both_result_orders_and_their_projection_ports() {
+    let (mut g, _, [a, b]) = pair(false, false);
+    let mut discovery = Discovery::new(&g, 64);
+    drain(&mut discovery, &mut g);
+
+    let forward = g
+        .lookup(TensorOp::OpTuple(vec![g.find(a), g.find(b)]))
+        .expect("independent results must be discoverable in declaration order");
+    let reverse = g
+        .lookup(TensorOp::OpTuple(vec![g.find(b), g.find(a)]))
+        .expect("the opposite port assignment is a distinct candidate");
+    assert_ne!(g.find(a), g.find(b));
+    assert_ne!(g.find(forward), g.find(reverse));
+    for (tuple, results) in [(forward, [a, b]), (reverse, [b, a])] {
+        for (index, result) in results.into_iter().enumerate() {
+            let projection = g
+                .lookup(TensorOp::OpGetTupleElement(index, [g.find(tuple)]))
+                .expect("each discovered result must have its own projection");
+            assert_eq!(g.find(projection), g.find(result));
+        }
+    }
+}
+
+#[test]
+fn empty_and_expired_batches_leave_candidates_available_for_small_batches() {
+    let (mut g, _, [a, b]) = pair(false, false);
+    let mut discovery = Discovery::new(&g, 64);
+    let size = g.total_size();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    assert_eq!(discovery.batch(&mut g, 0, deadline), 0);
+    assert_eq!(discovery.batch(&mut g, 1, Instant::now()), 0);
+    assert_eq!(g.total_size(), size);
+
+    let mut added = 0;
+    while !discovery.exhausted() {
+        assert!(
+            Instant::now() < deadline,
+            "small batches must make progress"
+        );
+        let batch = discovery.batch(&mut g, 1, deadline);
+        assert!(batch <= 1, "batch size limits registered candidates");
+        added += batch;
+    }
+    // Both result slots accept either independent dot, including repeated
+    // results. Empty/expired calls must not consume one of these assignments.
+    assert_eq!(added, 4);
+    for first in [a, b] {
+        for second in [a, b] {
+            assert!(has_pair(&g, first, second));
+        }
+    }
+}
+
+#[test]
+fn invalid_result_types_do_not_hide_a_later_valid_candidate_under_a_small_cap() {
+    for (rows, dtype) in [(32, Dtype::BF16), (64, Dtype::FP32)] {
+        let mut g = Graph::default();
+        // These products match the dot structure, but not DoubleGemm's
+        // bf16[64,64] result contract. Insert them before the valid product.
+        for i in 0..96 {
+            let left = tensor(
+                &mut g,
+                TensorOp::Var(format!("wrong_left_{i}")),
+                vec![rows, 64],
+            );
+            let right = variable(&mut g, &format!("wrong_right_{i}"));
+            let product = tensor(&mut g, TensorOp::OpDot([left, right]), vec![rows, 64]);
+            for id in [left, right, product] {
+                g[id].data.dtype = dtype;
+            }
+        }
+        let left = variable(&mut g, "valid_left");
+        let right = variable(&mut g, "valid_right");
+        let valid = matrix(&mut g, TensorOp::OpDot([left, right]));
+        g.rebuild();
+
+        let mut discovery = Discovery::new(&g, 1);
+        assert_eq!(
+            drain(&mut discovery, &mut g),
+            1,
+            "rows={rows}, dtype={dtype:?}"
+        );
+        assert!(
+            has_pair(&g, valid, valid),
+            "the valid result may fill both ports"
+        );
+        for class in g.classes() {
+            for op in &class.nodes {
+                if let TensorOp::OpTuple(results) = op {
+                    assert!(results.iter().all(|&id| g.find(id) == g.find(valid)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn global_candidate_cap_is_not_reset_when_new_results_are_added() {
+    let (mut g, _, [a, b]) = pair(false, false);
+    let mut discovery = Discovery::new(&g, 2);
+    assert_eq!(drain(&mut discovery, &mut g), 2);
+
+    let left = variable(&mut g, "later_left");
+    let right = variable(&mut g, "later_right");
+    let later = matrix(&mut g, TensorOp::OpDot([left, right]));
+    g.rebuild();
+    let size = g.total_size();
+    discovery.refresh(&g);
+    assert_eq!(drain(&mut discovery, &mut g), 0);
+    assert_eq!(g.total_size(), size);
+    for other in [a, b, later] {
+        assert!(!has_pair(&g, later, other));
+        assert!(!has_pair(&g, other, later));
+    }
+}
+
+#[test]
 fn refreshed_candidate_reaches_fast_extraction_as_one_producer_with_two_ports() {
     let mut g = Graph::default();
     let mut inputs = HashSet::new();
