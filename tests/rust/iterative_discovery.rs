@@ -478,7 +478,11 @@ fn empty_and_expired_batches_leave_candidates_available_for_small_batches() {
 
 #[test]
 fn invalid_result_types_do_not_hide_a_later_valid_candidate_under_a_small_cap() {
-    for (rows, dtype) in [(32, Dtype::BF16), (64, Dtype::FP32)] {
+    for (shape, dtype) in [
+        (vec![32, 64], Dtype::BF16),
+        (vec![64], Dtype::BF16),
+        (vec![64, 64], Dtype::FP32),
+    ] {
         let mut g = Graph::default();
         // These products match the dot structure, but not DoubleGemm's
         // bf16[64,64] result contract. Insert them before the valid product.
@@ -486,10 +490,10 @@ fn invalid_result_types_do_not_hide_a_later_valid_candidate_under_a_small_cap() 
             let left = tensor(
                 &mut g,
                 TensorOp::Var(format!("wrong_left_{i}")),
-                vec![rows, 64],
+                shape.clone(),
             );
             let right = variable(&mut g, &format!("wrong_right_{i}"));
-            let product = tensor(&mut g, TensorOp::OpDot([left, right]), vec![rows, 64]);
+            let product = tensor(&mut g, TensorOp::OpDot([left, right]), shape.clone());
             for id in [left, right, product] {
                 g[id].data.dtype = dtype;
             }
@@ -503,7 +507,7 @@ fn invalid_result_types_do_not_hide_a_later_valid_candidate_under_a_small_cap() 
         assert_eq!(
             drain(&mut discovery, &mut g),
             1,
-            "rows={rows}, dtype={dtype:?}"
+            "shape={shape:?}, dtype={dtype:?}"
         );
         assert!(
             has_pair(&g, valid, valid),
