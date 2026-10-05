@@ -6,5 +6,6 @@ act-backend/0004-pii-model.patch
 act-backend/0005-pii-extraction.patch
 act-backend/0006-pii-to-assembly.patch
 act-backend/0007-candidate-evaluation.patch
+act-backend/0008-multipattern-discovery.patch
 act-oracle/0001-isa-codegen.patch
 act-oracle/0002-hlo-tuples.patch

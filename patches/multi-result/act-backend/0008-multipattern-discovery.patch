@@ -1,0 +1,430 @@
+diff --git a/act_backend/generic/src/isel/discovery.rs b/act_backend/generic/src/isel/discovery.rs
+--- a/act_backend/generic/src/isel/discovery.rs
++++ b/act_backend/generic/src/isel/discovery.rs
+@@ -1,74 +1,109 @@
+ //! Refresh generated multi-result matches at e-graph iteration boundaries.
+ //! Adds only value tuples/projections; ISA nodes come from generated rewrites.
+-use std::collections::{HashMap, HashSet};
++use std::collections::{HashMap, HashSet, VecDeque};
+ use std::time::Instant;
+ 
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+ use crate::isel::rewrites;
+ use crate::isel::rewrites::joint::{Derivations, ResultMatch};
+-use egg::{EGraph, Id, Pattern, Searcher, Var};
++use egg::{EGraph, Id, MultiPattern, Pattern, Searcher, SymbolLang, Var};
+ 
+ #[derive(Clone)]
+ struct Match {
+     id: Id,
+-    bindings: HashMap<Var, Id>,
+-}
+-
+-struct Space {
+-    choices: Vec<Vec<Match>>,
+-    cursor: usize,
+-    total: usize,
+-}
+-
+-impl Space {
+-    fn next(&mut self) -> Option<Vec<Match>> {
+-        if self.cursor >= self.total {
+-            return None;
+-        }
+-        // Ordinary Cartesian enumeration; no pairing or semantic-family score.
+-        let mut offset = self.cursor;
+-        self.cursor += 1;
+-        Some(
+-            self.choices
++    operands: Vec<Id>,
++}
++
++/// Join typed matches using egg rather than enumerating their Cartesian product.
++/// Type filtering must precede the bounded join: rejected shapes must not consume
++/// the match budget. The temporary facts also keep ACT's metadata wildcards out
++/// of egg's exact-lookup optimization for already-bound pattern variables.
++fn joint_matches(
++    graph: &EGraph<TensorOp, TensorInfo>,
++    patterns: &[(&str, crate::ir::dtype::Dtype, Vec<Option<i32>>)],
++    limit: usize,
++) -> VecDeque<Vec<Match>> {
++    let mut facts = EGraph::<SymbolLang, ()>::default();
++    let mut rows = HashMap::new();
++    let mut clauses = vec![];
++    let mut binders = vec![];
++    for (slot, (text, dtype, shape)) in patterns.iter().enumerate() {
++        let pattern: Pattern<TensorOp> = text.parse().unwrap();
++        let vars = pattern.vars();
++        let canonical = |var: Var| var.to_string().split("__use").next().unwrap().to_owned();
++        let mut inputs: Vec<_> = vars.iter().map(|&var| canonical(var)).collect();
++        inputs.sort();
++        inputs.dedup();
++        let binder: Var = format!("?row_{slot}").parse().unwrap();
++        let arguments = inputs
++            .iter()
++            .map(|var| format!(" ?input_{}", &var[1..]))
++            .collect::<String>();
++        let query = format!("(slot_{slot} ?value_{slot}{arguments})");
++        clauses.push((binder, query.parse().unwrap()));
++        binders.push(binder);
++        let mut count = 0;
++        for matched in pattern.search(graph) {
++            if crate::ir::egraph::tuple_elements(graph, matched.eclass).is_some() {
++                continue;
++            }
++            let info = &graph[matched.eclass].data;
++            if info.dtype != *dtype
++                || info.shape.len() != shape.len()
++                || info
++                    .shape
++                    .iter()
++                    .zip(shape)
++                    .any(|(actual, required)| required.is_some_and(|required| *actual != required))
++            {
++                continue;
++            }
++            for subst in matched.substs {
++                let mut bindings = HashMap::new();
++                if !vars.iter().all(|&var| {
++                    let value = graph.find(subst[var]);
++                    bindings
++                        .insert(canonical(var), value)
++                        .is_none_or(|old| old == value)
++                }) {
++                    continue;
++                }
++                let id = graph.find(matched.eclass);
++                let operands: Vec<_> = inputs.iter().map(|var| bindings[var]).collect();
++                let children = std::iter::once(id)
++                    .chain(operands.iter().copied())
++                    .map(|value| facts.add(SymbolLang::leaf(format!("v{value}"))))
++                    .collect();
++                let row = facts.add(SymbolLang::new(format!("slot_{slot}"), children));
++                rows.insert(row, Match { id, operands });
++                count += 1;
++            }
++        }
++        if count == 0 {
++            return VecDeque::new();
++        }
++    }
++    if clauses.is_empty() || limit == 0 {
++        return VecDeque::new();
++    }
++    facts.rebuild();
++    MultiPattern::new(clauses)
++        .search_with_limit(&facts, limit)
++        .into_iter()
++        .flat_map(|matched| matched.substs)
++        .map(|subst| {
++            binders
+                 .iter()
+-                .map(|choices| {
+-                    let position = offset % choices.len();
+-                    offset /= choices.len();
+-                    choices[position].clone()
+-                })
+-                .collect(),
+-        )
+-    }
+-}
+-
+-fn compatible(selected: &[Match], derivations: &mut Derivations, deadline: Instant) -> bool {
+-    let mut bindings = HashMap::new();
+-    for item in selected {
+-        for (&var, &value) in &item.bindings {
+-            if bindings
+-                .insert(var, value)
+-                .is_some_and(|previous| previous != value)
+-            {
+-                return false;
+-            }
+-        }
+-    }
+-    let results: Vec<_> = selected
+-        .iter()
+-        .map(|item| ResultMatch {
+-            value: item.id,
+-            operands: item.bindings.values().copied().collect(),
++                .map(|var| rows[&subst[*var]].clone())
++                .collect()
+         })
+-        .collect();
+-    // Same feasibility rule as generated ISA preconditions; this snapshot is
+-    // only an early discovery filter, never authorization for a later match.
+-    derivations.inputs_available(&results, Some(deadline))
++        .collect()
+ }
+ 
+ /// Candidate registration is persistent; matching and derivations are snapshots.
+ /// The global tuple cap is shared by all refreshes, not reset by each hook.
+ pub struct Discovery {
+-    spaces: Vec<Space>,
++    spaces: Vec<VecDeque<Vec<Match>>>,
+     derivations: Derivations,
+     seen: HashSet<Vec<Id>>,
+     cursor: usize,
+@@ -80,7 +115,7 @@
+     pub fn exhausted(&self) -> bool {
+         self.seen.len() >= self.limit
+             || self.attempts >= self.limit.saturating_mul(64)
+-            || self.spaces.iter().all(|space| space.cursor >= space.total)
++            || self.spaces.iter().all(VecDeque::is_empty)
+     }
+ 
+     pub fn new(graph: &EGraph<TensorOp, TensorInfo>, limit: usize) -> Self {
+@@ -96,8 +131,9 @@
+         discovery
+     }
+ 
+-    /// Call after rebuild, even when no new e-class was created: a union can
+-    /// expose new pattern matches and new independent operand derivations.
++    /// Search a fixed graph once; batch consumption never re-queries a changed
++    /// graph with an offset into an unstable search prefix. The bounded snapshot
++    /// limits returned joint matches, but egg cannot interrupt a search mid-call.
+     pub fn refresh(&mut self, graph: &EGraph<TensorOp, TensorInfo>) {
+         self.seen = self
+             .seen
+@@ -109,61 +145,10 @@
+         if self.seen.len() >= self.limit {
+             return;
+         }
+-        let mut spaces = vec![];
+-        for (_, patterns) in rewrites::multi_result_typed_patterns() {
+-            let choices: Vec<Vec<Match>> = patterns
+-                .iter()
+-                .map(|(text, dtype, shape)| {
+-                    let pattern: Pattern<TensorOp> = text.parse().unwrap();
+-                    let vars = pattern.vars();
+-                    let mut result = vec![];
+-                    for matched in pattern.search(graph) {
+-                        if crate::ir::egraph::tuple_elements(graph, matched.eclass).is_some() {
+-                            continue;
+-                        }
+-                        let info = &graph[matched.eclass].data;
+-                        if info.dtype != *dtype
+-                            || info.shape.len() != shape.len()
+-                            || info.shape.iter().zip(shape).any(|(actual, required)| {
+-                                required.is_some_and(|required| *actual != required)
+-                            })
+-                        {
+-                            continue;
+-                        }
+-                        for subst in matched.substs {
+-                            let mut bindings = HashMap::new();
+-                            let consistent = vars.iter().all(|&var| {
+-                                let text = var.to_string();
+-                                let canonical: Var =
+-                                    text.split("__use").next().unwrap().parse().unwrap();
+-                                let value = graph.find(subst[var]);
+-                                bindings
+-                                    .insert(canonical, value)
+-                                    .is_none_or(|previous| previous == value)
+-                            });
+-                            if !consistent {
+-                                continue;
+-                            }
+-                            result.push(Match {
+-                                id: matched.eclass,
+-                                bindings,
+-                            });
+-                        }
+-                    }
+-                    result.sort_by_key(|item| item.id);
+-                    result
+-                })
+-                .collect();
+-            let total = choices
+-                .iter()
+-                .fold(1usize, |total, choices| total.saturating_mul(choices.len()));
+-            spaces.push(Space {
+-                choices,
+-                cursor: 0,
+-                total,
+-            });
+-        }
+-        self.spaces = spaces;
++        self.spaces = rewrites::multi_result_typed_patterns()
++            .iter()
++            .map(|(_, patterns)| joint_matches(graph, patterns, self.limit.saturating_mul(64)))
++            .collect();
+         self.derivations = Derivations::new(graph);
+     }
+ 
+@@ -181,7 +166,7 @@
+         let index = loop {
+             let index = self.cursor % self.spaces.len();
+             self.cursor += 1;
+-            if self.spaces[index].cursor < self.spaces[index].total {
++            if !self.spaces[index].is_empty() {
+                 break index;
+             }
+             if self.cursor - start >= self.spaces.len() {
+@@ -193,7 +178,7 @@
+             && self.attempts < self.limit.saturating_mul(64)
+             && Instant::now() < deadline
+         {
+-            let Some(selected) = self.spaces[index].next() else {
++            let Some(selected) = self.spaces[index].pop_front() else {
+                 break;
+             };
+             self.attempts += 1;
+@@ -201,7 +186,16 @@
+             if self.seen.contains(&children) {
+                 continue;
+             }
+-            if !compatible(&selected, &mut self.derivations, deadline) {
++            let results: Vec<_> = selected
++                .into_iter()
++                .map(|item| ResultMatch {
++                    value: item.id,
++                    operands: item.operands,
++                })
++                .collect();
++            // A shared binding is guaranteed by MultiPattern, but input
++            // feasibility remains specific to this ISA match.
++            if !self.derivations.inputs_available(&results, Some(deadline)) {
+                 continue;
+             }
+             self.seen.insert(children.clone());
+@@ -218,3 +212,140 @@
+         added
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::joint_matches;
++    use crate::ir::dtype::Dtype;
++    use crate::ir::egraph::{TensorInfo, TensorOp};
++    use egg::{EGraph, Id};
++    use std::collections::HashSet;
++
++    type Graph = EGraph<TensorOp, TensorInfo>;
++
++    fn tensor(graph: &mut Graph, op: TensorOp, shape: &[i32]) -> Id {
++        let id = graph.add(op);
++        graph.set_analysis_data(
++            id,
++            TensorInfo {
++                dtype: Dtype::BF16,
++                shape: shape.to_vec(),
++                is_const: false,
++            },
++        );
++        id
++    }
++
++    fn matrix(graph: &mut Graph, op: TensorOp) -> Id {
++        tensor(graph, op, &[64, 64])
++    }
++
++    fn result_pairs(
++        graph: &Graph,
++        patterns: &[(&str, Dtype, Vec<Option<i32>>)],
++    ) -> HashSet<[Id; 2]> {
++        joint_matches(graph, patterns, 64)
++            .into_iter()
++            .map(|matched| {
++                assert_eq!(matched.len(), 2);
++                [graph.find(matched[0].id), graph.find(matched[1].id)]
++            })
++            .collect()
++    }
++
++    #[test]
++    fn joint_results_require_the_same_shared_input_eclass() {
++        // An ISA returns dot(x, a) and dot(x, b). Two products with different
++        // x inputs cannot implement it, although each result pattern matches.
++        let mut graph = Graph::default();
++        let [x, other_x, a, b] =
++            ["x", "other_x", "a", "b"].map(|name| matrix(&mut graph, TensorOp::Var(name.into())));
++        let first = matrix(&mut graph, TensorOp::OpDot([x, a]));
++        let valid_second = matrix(&mut graph, TensorOp::OpDot([x, b]));
++        let wrong_second = matrix(&mut graph, TensorOp::OpDot([other_x, b]));
++        graph.rebuild();
++        let patterns = [
++            ("(dot ?p0 ?p1)", Dtype::BF16, vec![Some(64), Some(64)]),
++            ("(dot ?p0 ?p2)", Dtype::BF16, vec![Some(64), Some(64)]),
++        ];
++
++        let found = result_pairs(&graph, &patterns);
++        assert!(found.contains(&[graph.find(first), graph.find(valid_second)]));
++        assert!(!found.contains(&[graph.find(first), graph.find(wrong_second)]));
++        assert!(!found.contains(&[graph.find(wrong_second), graph.find(first)]));
++
++        // Equality established by another rewrite is sufficient; the shared
++        // input is an e-class constraint, not the spelling of an input name.
++        graph.union(x, other_x);
++        graph.rebuild();
++        let found = result_pairs(&graph, &patterns);
++        assert!(found.contains(&[graph.find(first), graph.find(wrong_second)]));
++    }
++
++    #[test]
++    fn repeated_operand_occurrences_cannot_bind_different_inputs() {
++        // One input is used twice by multiply and again by the second result.
++        // Occurrence aliases in generated patterns still denote that one input.
++        let mut graph = Graph::default();
++        let a = matrix(&mut graph, TensorOp::Var("a".into()));
++        let b = matrix(&mut graph, TensorOp::Var("b".into()));
++        let square = matrix(&mut graph, TensorOp::OpMultiply([a, a]));
++        let product = matrix(&mut graph, TensorOp::OpMultiply([a, b]));
++        let copy_a = matrix(&mut graph, TensorOp::OpCopy([a]));
++        let copy_b = matrix(&mut graph, TensorOp::OpCopy([b]));
++        graph.rebuild();
++        let patterns = [
++            (
++                "(multiply ?p0 ?p0__use1)",
++                Dtype::BF16,
++                vec![Some(64), Some(64)],
++            ),
++            ("(copy ?p0__use2)", Dtype::BF16, vec![Some(64), Some(64)]),
++        ];
++
++        let found = result_pairs(&graph, &patterns);
++        assert_eq!(
++            found,
++            HashSet::from([[graph.find(square), graph.find(copy_a)]])
++        );
++        assert!(!found.iter().any(|pair| pair[0] == graph.find(product)));
++        assert!(!found.contains(&[graph.find(square), graph.find(copy_b)]));
++    }
++
++    #[test]
++    fn shared_input_reshape_results_keep_metadata_and_shape_wildcards() {
++        // Both outputs reshape the same input, but have distinct metadata and
++        // result shapes. Binding the input in the first result must not turn
++        // the second reshape_? into an exact metadata lookup for literal '?'.
++        let mut graph = Graph::default();
++        let a = matrix(&mut graph, TensorOp::Var("a".into()));
++        let b = matrix(&mut graph, TensorOp::Var("b".into()));
++        let first = tensor(
++            &mut graph,
++            TensorOp::OpReshape("32,128".into(), [a]),
++            &[32, 128],
++        );
++        let second = tensor(
++            &mut graph,
++            TensorOp::OpReshape("16,256".into(), [a]),
++            &[16, 256],
++        );
++        let unrelated = tensor(
++            &mut graph,
++            TensorOp::OpReshape("16,256".into(), [b]),
++            &[16, 256],
++        );
++        graph.rebuild();
++        let patterns = [
++            ("(reshape_? ?p0)", Dtype::BF16, vec![Some(32), Some(128)]),
++            ("(reshape_? ?p0)", Dtype::BF16, vec![None, Some(256)]),
++        ];
++
++        let found = result_pairs(&graph, &patterns);
++        assert_eq!(
++            found,
++            HashSet::from([[graph.find(first), graph.find(second)]])
++        );
++        assert!(!found.contains(&[graph.find(first), graph.find(unrelated)]));
++    }
++}
