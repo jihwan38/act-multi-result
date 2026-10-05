@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Source this file after Conda activation and prepare_sources.py.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-    echo 'Use: source scripts/env.sh baseline|multi-result' >&2
+    echo 'Use: source scripts/env.sh baseline|multi-result|multipattern' >&2
     exit 2
 fi
 
 _act_select_environment() {
     local repo_root exports
     if [[ $# != 1 ]]; then
-        echo 'Use: source scripts/env.sh baseline|multi-result' >&2
+        echo 'Use: source scripts/env.sh baseline|multi-result|multipattern' >&2
         return 2
     fi
     repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

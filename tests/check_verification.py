@@ -1,4 +1,5 @@
 """Exercise the shared verification CLI against real generated assemblies."""
+import argparse
 import json
 from pathlib import Path
 import re
@@ -8,15 +9,23 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from _internal.common import TOOLCHAINS
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--toolchain", default="multi-result",
+                        choices=[name for name, groups in TOOLCHAINS.items() if "multi-result" in groups],
+                        help="Toolchain whose generated assemblies and Oracles are checked (default: multi-result)")
+    args = parser.parse_args()
+    build_dir = ROOT / "build" / args.toolchain
     qkv_hlo = ROOT / "cases/qkv/workloads/attention.hlo"
     double_hlo = ROOT / "cases/double_gemm/workloads/two_gemm_concat.hlo"
-    multi_qkv = ROOT / "build/multi-result/runs/qkv/attention/assembly.py"
-    double = ROOT / "build/multi-result/runs/double_gemm/two_gemm_concat/assembly.py"
-    qkv_oracle = ROOT / "build/multi-result/targets/QKV/oracle"
-    double_oracle = ROOT / "build/multi-result/targets/QKVDoubleGemm/oracle"
+    qkv = build_dir / "runs/qkv/attention/assembly.py"
+    double = build_dir / "runs/double_gemm/two_gemm_concat/assembly.py"
+    qkv_oracle = build_dir / "targets/QKV/oracle"
+    double_oracle = build_dir / "targets/QKVDoubleGemm/oracle"
     isa = ROOT / "cases/double_gemm/QKVDoubleGemm.py"
 
     with tempfile.TemporaryDirectory(prefix="act-verify-") as temporary:
@@ -43,18 +52,18 @@ def main():
             return data
 
         moved = directory / "moved.py"
-        shutil.copy2(multi_qkv, moved)
+        shutil.copy2(qkv, moved)
         check("unknown-location", qkv_hlo, moved, error="pass --oracle")
         check("missing-input", directory / "missing.hlo", moved, "--oracle", qkv_oracle, error="Missing input")
         check("explicit-oracle", qkv_hlo, moved, "--oracle", qkv_oracle)
-        data = check("qkv-allocation", qkv_hlo, multi_qkv)
+        data = check("qkv-allocation", qkv_hlo, qkv)
         assert data["allocation"]["passed"]
         check("wrong-oracle", double_hlo, double, "--oracle", qkv_oracle, error="has no instruction")
-        check("wrong-hlo", double_hlo, multi_qkv, error="input count differs")
+        check("wrong-hlo", double_hlo, qkv, error="input count differs")
 
         # Remove a real computation while keeping a runnable straight-line program.
         incorrect = directory / "incorrect.py"
-        original = multi_qkv.read_text()
+        original = qkv.read_text()
         assert "api.softmax(" in original
         incorrect.write_text("\n".join(line for line in original.splitlines() if "api.softmax(" not in line) + "\n")
         check("wrong-result", qkv_hlo, incorrect, "--oracle", qkv_oracle, error="Oracle/HLO results differ")

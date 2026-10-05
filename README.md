@@ -148,8 +148,9 @@ source scripts/env.sh multi-result
 | --- | --- | --- |
 | `baseline` | 고정 upstream + `patches/baseline/` | `build/baseline/` |
 | `multi-result` | 같은 upstream + `patches/baseline/` → `patches/multi-result/` | `build/multi-result/` |
+| `multipattern` | `multi-result` 구성 + `patches/multipattern/` | `build/multipattern/` |
 
-`patches/baseline/`은 두 구성 모두에 적용하는 기본 수정이다. native 의존성 경로,
+`patches/baseline/`은 세 구성 모두에 적용하는 기본 수정이다. native 의존성 경로,
 명시적 HLO ROOT 처리, 선언한 주소 제약 적용, Oracle broadcast를 수정한다.
 수정하지 않은 upstream은 `third_party/`에 보관한다.
 
@@ -190,10 +191,36 @@ python scripts/verify.py \
   --assembly "$ACT_BUILD_DIR/runs/double_gemm/two_gemm_concat/assembly.py"
 ```
 
-DoubleGEMM도 같은 `verify.py`를 사용한다. `multi-result` 구성의 QKV·DoubleGEMM 기본 run 경로에서는
+DoubleGEMM도 같은 `verify.py`를 사용한다. `multi-result`·`multipattern` 구성의 QKV·DoubleGEMM 기본 run 경로에서는
 compiler가 쓴 `assembly.py.allocation.json`과 선택된 PII를 ISA 선언에 대조해
 결과 port·주소 범위·수명 충돌을 검사한다. 일반 검증은 특정 명령의 호출 횟수를 요구하지 않는다.
 개별 GEMM으로 구현된 assembly도 계산과 주소가 올바르면 통과한다.
+
+### 실험 구성: 실제 e-graph에서 MultiPattern으로 공동 검색
+
+`multipattern`은 `multi-result`의 후보 발견 부분을 별도 패치로 바꾼 구성이다.
+`MultiPattern<TensorOp>`이 실제 ACT e-graph에서 여러 결과 패턴을 함께 검색하며,
+별도의 fact graph를 만들지 않는다. 찾은 조합에는 기존 tuple/GTE 등록·입력 검사·ISA rewrite
+경로를 사용한다. `baseline`과 기본 `multi-result`의 패치·생성 위치는 그대로 유지한다.
+
+```bash
+python scripts/prepare_sources.py multipattern
+source scripts/env.sh multipattern
+python cases/double_gemm/QKVDoubleGemm.py
+./scripts/run.sh double_gemm --toolchain multipattern --skip-build
+
+./scripts/test.sh --toolchain multipattern --unit-only
+./scripts/test.sh --toolchain multipattern
+```
+
+생성물과 실행 결과는 `build/multipattern/`에 둔다. `run.sh`의 기본 선택은 여전히
+QKV=`baseline`, DoubleGEMM=`multi-result`이므로 실험에는 `--toolchain multipattern`을 명시한다.
+앞의 DoubleGEMM 직접 compiler·Oracle 명령도 선택한 `$ACT_BUILD_DIR`에서 그대로 사용할 수 있다.
+
+독립된 결과에 공유 변수 제약이 없으면 가능한 조합 수는 줄지 않는다.
+반환 후보 수에는 제한을 두지만, 형상에 맞는 후보가 부족하면 검색 결과를 더 많이 받아 다시 거른다.
+이때 임시 결과의 메모리는 반환 후보 한도로 제한되지 않는다. egg 검색 한 번을 중간 취소할 수도 없으므로,
+이 구성이 더 빠르거나 검색 시간이 엄격히 제한된다고 보장하지 않는다.
 
 ## 6. 다른 HLO를 실행하기
 
@@ -236,8 +263,9 @@ cases/
   qkv/                 QKV.py, workloads/attention.hlo
   double_gemm/         QKVDoubleGemm.py, workloads/two_gemm_concat.hlo
 patches/
-  baseline/            기본 수정 패치 + series; 두 구성 모두에 적용
+  baseline/            기본 수정 패치 + series; 세 구성 모두에 적용
   multi-result/        다중 출력 패치 + series
+  multipattern/        실제 e-graph 공동 검색 실험 패치 + series
 third_party/           고정 upstream submodule 4개
 scripts/
   setup.sh             Conda 환경·ACT 패키지·OR-Tools 설치
@@ -279,6 +307,11 @@ Backend는 **어떤 계산을 ISA로 바꿀 수 있는지**, Oracle은 **그 ISA
 | PII 추출 | [0005-pii-extraction](patches/multi-result/act-backend/0005-pii-extraction.patch) | `extractor/fast.rs`, `slow.rs`, `utils.rs`. 요구한 값의 생산자·결과를 선택하고, 재사용과 실패 시 복구를 처리한다. |
 | PII → assembly | [0006-pii-to-assembly](patches/multi-result/act-backend/0006-pii-to-assembly.patch) | C++ parser·Instruction/Tensor·scheduler·allocator·emitter와 생성기. 결과별 주소·수명을 계산해 호출문과 할당 기록을 쓴다. |
 | 최종 후보 선택 | [0007-candidate-evaluation](patches/multi-result/act-backend/0007-candidate-evaluation.patch) | `pipeline.rs`의 종료 판단. 받은 PII batch에 미평가 후보가 있으면 ‘개선 없음’ 중단을 보류하며 전체 시간 제한은 유지한다. |
+
+실험 구성의 [Backend 0001 — direct-discovery](patches/multipattern/act-backend/0001-direct-discovery.patch)는
+위 7개 패치 다음에 적용하며 `discovery.rs`의 검색 부분을 바꾼다. 연산자마다 새 child 변수를 둔
+얕은 패턴과 입력 동등성 조건으로 공동 검색을 구성해, metadata wildcard를 보존한다.
+기본 `multi-result`는 이 패치를 적용하지 않는다.
 
 Oracle의 [0002-hlo-tuples](patches/multi-result/act-oracle/0002-hlo-tuples.patch)는 생성된 kernel의
 입력 tuple을 tensor 목록으로 펼치고 결과를 원래 tuple 구조로 복원한다. ISA 한 명령어의 결과
@@ -323,6 +356,9 @@ tuple이 직접 들어오는 경우에도 현재 매칭을 확인해야 하기 �
 `build/<구성>/src/provenance.json`에는 upstream revision·패치 hash를 기록한다.
 준비된 소스를 직접 수정했으면 `prepare_sources.py`는 덮어쓰지 않고 멈춘다.
 변경을 패치로 보존한 뒤 재생성한다. `--force`는 해당 구성의 준비된 소스를 교체한다.
+패치 구성이 바뀌거나 `--force`로 교체하면 `build/<구성>/backends/`의 이전 실행 파일도 제거한다.
+생성 target·빌드 캐시·기존 runs는 보존하지만 ISA Python을 다시 실행해 compiler를 생성해야 한다.
+소스와 패치 구성이 그대로인 일반 재실행은 기존 실행 파일을 유지한다.
 
 ## 선택 사항: 명령 묶어서 실행하기와 회귀 테스트
 
@@ -340,12 +376,17 @@ tuple이 직접 들어오는 경우에도 현재 매칭을 확인해야 하기 �
 
 ./scripts/test.sh --unit-only
 ./scripts/test.sh
+
+# 기본 회귀와 별도로 직접 MultiPattern 검색 구성을 검증
+./scripts/test.sh --toolchain multipattern
 ```
 
 보조 스크립트는 `build/<구성>/runs/<case>/<HLO파일명>/assembly.py`에 결과를 둔다.
 같은 경로로 재실행하면 assembly·검증 결과와 compiler 로그를 갱신한다.
 `run.json`은 실행 기록, `selected.pii`는 선택된 PII의 복사본이다.
 ISA를 바꿨으면 먼저 ISA Python을 다시 실행하거나 `--skip-build`를 빼고 실행한다.
+`--skip-build`는 소스를 준비한 당시의 패치 구성과 현재 구성이 다르면 거절한다.
+이때는 `--skip-build` 없이 실행해 compiler와 Oracle을 다시 만든다.
 Compiler와 Oracle만 만들려면 5절처럼 `source scripts/env.sh multi-result` 후
 `python cases/double_gemm/QKVDoubleGemm.py`를 실행한다.
 
@@ -356,7 +397,12 @@ Compiler와 Oracle만 만들려면 5절처럼 `source scripts/env.sh multi-resul
 회귀 테스트는 튜토리얼 ISA 보존, Python 생성기, 세 기본 실행 조합, 검증 CLI의 실패 처리와 결과 순서 비교, 의존성 있는 GEMM의
 결합 거절, 잘못된 할당 기록의 거절, Rust의 tuple·반환값·후보 발견을 검사한다.
 기본 예제가 DoubleGEMM을 선택하는지 확인하는 것은 이 회귀 테스트에 포함한다.
-결과는 `build/checks/tests/summary.json`에 남는다.
+기본 결과는 `build/checks/tests/summary.json`에 남는다.
+
+기본 테스트는 기존 `baseline` QKV와 `multi-result` QKV·DoubleGEMM을 검증한다.
+`--toolchain multipattern`은 `baseline` QKV를 유지하면서 나머지 두 실행과 생성기·의존성·Rust
+검사를 `multipattern` 구성으로 수행한다. `--unit-only`를 함께 주면 해당 구성의 Python 테스트만 실행한다.
+실험 구성의 결과는 `build/checks/tests/multipattern/summary.json`에 별도로 남는다.
 
 `tests/test_*.py`는 명세 해석·생성기·공개 ISA·metadata를 검사한다. 서로 다른 연산·타입·크기의
 출력을 갖는 작은 ISA는 필요한 테스트 안에서 선언해 생성기로 확인한다. `tests/check_*.py`는

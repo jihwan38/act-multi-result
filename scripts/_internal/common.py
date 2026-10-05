@@ -1,4 +1,4 @@
-"""Shared paths and process isolation for the two ACT toolchains."""
+"""Shared paths and process isolation for the selectable ACT toolchains."""
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -11,15 +11,19 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPONENTS = ("act", "taidl", "act-backend", "act-oracle")
-TOOLCHAINS = {"baseline": ("baseline",), "multi-result": ("baseline", "multi-result")}
+TOOLCHAINS = {
+    "baseline": ("baseline",),
+    "multi-result": ("baseline", "multi-result"),
+    "multipattern": ("baseline", "multi-result", "multipattern"),
+}
 # The run shortcut and verify's default paths use this list. ISA scripts run directly.
 CASES = {
     "qkv": {"target": "QKV", "isa": "QKV.py",
             "default_workload": "workloads/attention.hlo", "default_toolchain": "baseline",
-            "toolchains": ("baseline", "multi-result")},
+            "toolchains": ("baseline", "multi-result", "multipattern")},
     "double_gemm": {"target": "QKVDoubleGemm", "isa": "QKVDoubleGemm.py",
                     "default_workload": "workloads/two_gemm_concat.hlo", "default_toolchain": "multi-result",
-                    "toolchains": ("multi-result",)},
+                    "toolchains": ("multi-result", "multipattern")},
 }
 
 

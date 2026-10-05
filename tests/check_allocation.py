@@ -1,4 +1,5 @@
 """Mutate real compiler output to ensure address audits reject broken records."""
+import argparse
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -10,11 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from _internal.audit import audit
 from _internal.assembly import parse
+from _internal.common import COMPONENTS, TOOLCHAINS
 from _internal.isa_ports import describe
 
 
 def main():
-    result = ROOT / "build/multi-result/runs/double_gemm/two_gemm_concat"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--toolchain", default="multi-result",
+                        choices=[name for name, groups in TOOLCHAINS.items() if "multi-result" in groups],
+                        help="Toolchain whose DoubleGEMM allocation is checked (default: multi-result)")
+    args = parser.parse_args()
+    build_dir = ROOT / "build" / args.toolchain
+    sys.path[:0] = [str(build_dir / "src" / name) for name in COMPONENTS]
+    result = build_dir / "runs/double_gemm/two_gemm_concat"
     allocation = json.loads((result / "assembly.py.allocation.json").read_text())
     assembly = (result / "assembly.py").read_text()
     selected_pii = re.search(r"^# PII number: (\d+)$", assembly, re.M)

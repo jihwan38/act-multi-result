@@ -37,10 +37,13 @@ class VerificationTests(unittest.TestCase):
                 self.assertEqual(bool(np.any(value)), label != "zero")
 
     def test_both_multi_result_examples_infer_an_allocation_audit(self):
-        for case, filename in (("qkv", "QKV.py"), ("double_gemm", "QKVDoubleGemm.py")):
-            oracle, isa = example_defaults(ROOT / "build/multi-result/runs" / case / "example/assembly.py")
-            self.assertIsNotNone(oracle)
-            self.assertEqual(isa, ROOT / "cases" / case / filename)
+        for mode in ("multi-result", "multipattern"):
+            for case, filename, target in (("qkv", "QKV.py", "QKV"),
+                                           ("double_gemm", "QKVDoubleGemm.py", "QKVDoubleGemm")):
+                with self.subTest(toolchain=mode, case=case):
+                    oracle, isa = example_defaults(ROOT / "build" / mode / "runs" / case / "example/assembly.py")
+                    self.assertEqual(oracle, ROOT / "build" / mode / "targets" / target / "oracle")
+                    self.assertEqual(isa, ROOT / "cases" / case / filename)
         self.assertIsNone(example_defaults(ROOT / "build/baseline/runs/qkv/example/assembly.py")[1])
 
     def test_report_cannot_replace_an_inferred_pii_or_allocation_file(self):

@@ -6,15 +6,21 @@ import os
 import shutil
 import sys
 
-from .common import ROOT, command, main_guard, process_env, toolchain_lock, write_json
+from .common import ROOT, TOOLCHAINS, command, main_guard, process_env, toolchain_lock, write_json
 from prepare_sources import prepare
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--toolchain", default="multi-result",
+                        choices=[name for name, groups in TOOLCHAINS.items() if "multi-result" in groups],
+                        help="Toolchain to test alongside baseline QKV (default: multi-result)")
     parser.add_argument("--unit-only", action="store_true", help="Run Python generator tests only")
     args = parser.parse_args()
     result_dir = ROOT / "build/checks/tests"
+    if args.toolchain != "multi-result":
+        result_dir /= args.toolchain
+    build_dir = ROOT / "build" / args.toolchain
     result_dir.mkdir(parents=True, exist_ok=True)
     records = []
 
@@ -29,23 +35,26 @@ def main():
         finally:
             write_json(result_dir / "summary.json", records)
 
-    with toolchain_lock("multi-result"):
-        prepare("multi-result")
-        env = process_env("multi-result")
+    with toolchain_lock(args.toolchain):
+        prepare(args.toolchain)
+        env = process_env(args.toolchain)
         env["PYTHONPATH"] = str(ROOT / "scripts") + os.pathsep + env["PYTHONPATH"]
         check("python", [sys.executable, "-m", "unittest", "discover", "-s", ROOT / "tests",
                          "-p", "test_*.py", "-v"], env)
     if args.unit_only:
         return
 
-    for case, toolchain in (("qkv", "baseline"), ("qkv", "multi-result"), ("double_gemm", "multi-result")):
+    for case, toolchain in (("qkv", "baseline"), ("qkv", args.toolchain), ("double_gemm", args.toolchain)):
         check(f"{toolchain}-{case}", [ROOT / "scripts/run.sh", case, "--toolchain", toolchain],
               process_env(toolchain))
-    check("verification-cli", [sys.executable, ROOT / "tests/check_verification.py"], env)
-    check("allocation-mutations", [sys.executable, ROOT / "tests/check_allocation.py"], env)
+    check("verification-cli", [sys.executable, ROOT / "tests/check_verification.py",
+                               "--toolchain", args.toolchain], env)
+    check("allocation-mutations", [sys.executable, ROOT / "tests/check_allocation.py",
+                                   "--toolchain", args.toolchain], env)
     for name in ("dependent_tuple", "dependent_tuple_transitive"):
-        check(name, [ROOT / "scripts/run.sh", "double_gemm", "--skip-build", "--workload", ROOT / "tests/fixtures" / f"{name}.hlo"], env)
-        report = json.loads((ROOT / "build/multi-result/runs/double_gemm" / name / "verification.json").read_text())
+        check(name, [ROOT / "scripts/run.sh", "double_gemm", "--toolchain", args.toolchain,
+                     "--skip-build", "--workload", ROOT / "tests/fixtures" / f"{name}.hlo"], env)
+        report = json.loads((build_dir / "runs/double_gemm" / name / "verification.json").read_text())
         if report["api_calls"].get("double_gemm", 0):
             records[-1].update(passed=False, error="Dependent GEMMs were combined")
             write_json(result_dir / "summary.json", records)
@@ -55,9 +64,9 @@ def main():
     # remain unchanged after running the Rust tests.
     suites = {"QKV": ("gte_frontend", "program_outputs", "recursive_tuples", "scalar_buffers"),
               "QKVDoubleGemm": ("iterative_discovery",)}
-    with toolchain_lock("multi-result"):
+    with toolchain_lock(args.toolchain):
         for target, suites_for_target in suites.items():
-            source = ROOT / "build/multi-result/targets" / target / "backend"
+            source = build_dir / "targets" / target / "backend"
             workspace = result_dir / "rust" / target
             if workspace.exists():
                 shutil.rmtree(workspace)

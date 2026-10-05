@@ -29,7 +29,7 @@ def example_defaults(assembly):
         if mode not in config["toolchains"]:
             break
         oracle = base / "targets" / config["target"] / "oracle"
-        isa = ROOT / "cases" / case / config["isa"] if mode == "multi-result" else None
+        isa = ROOT / "cases" / case / config["isa"] if "multi-result" in TOOLCHAINS[mode] else None
         return oracle, isa
     return None, None
 
@@ -39,7 +39,7 @@ def arguments(argv=None):
     parser.add_argument("--hlo", "--workload", dest="hlo", type=Path, required=True, help="Original workload HLO")
     parser.add_argument("--assembly", type=Path, required=True, help="Compiled Python assembly")
     parser.add_argument("--oracle", type=Path, help="Generated targets/<target>/oracle directory; inferred for the example run paths")
-    parser.add_argument("--isa", type=Path, help="ISA Python declaration for an allocation audit; inferred for the multi-result run paths")
+    parser.add_argument("--isa", type=Path, help="ISA Python declaration for an allocation audit; inferred for run paths whose toolchain includes multi-result patches")
     parser.add_argument("--pii", type=Path, help="Selected PII for the allocation audit; otherwise found in compiler/")
     parser.add_argument("--report", type=Path, help="Report path; defaults to verification.json beside the assembly")
     args = parser.parse_args(argv)
