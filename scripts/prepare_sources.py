@@ -55,6 +55,12 @@ def prepare(toolchain, force=False):
                     subprocess.run([*base_command, *flags, str(ROOT / patch["path"])], env=env, check=True)
         record = {**plan, "fingerprint": signature, "files": source_hashes(stage)}
         write_json(stage / "provenance.json", record)
+        # These executable copies belong to the previous source configuration.
+        # Keep generated targets/caches and run records, but require each ISA
+        # script to regenerate its compiler before --skip-build can reuse it.
+        binaries = base / "backends"
+        if binaries.exists():
+            shutil.rmtree(binaries)
         if output.exists():
             shutil.rmtree(output)
         stage.replace(output)

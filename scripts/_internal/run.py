@@ -7,8 +7,8 @@ import re
 import shutil
 import sys
 
-from .common import (ROOT, TOOLCHAINS, case_config, command, digest, main_guard,
-                     process_env, toolchain_lock, write_json)
+from .common import (ROOT, TOOLCHAINS, case_config, command, digest, fingerprint, main_guard,
+                     process_env, source_plan, toolchain_lock, write_json)
 from prepare_sources import prepare
 
 
@@ -19,6 +19,17 @@ def built_target(config, toolchain):
     if not binary.is_file() or not list((target / "oracle/build").glob("print_handler_ext*.so")):
         raise ValueError("Generate the compiler and Oracle by running the ISA Python file first")
     return target, binary
+
+
+def existing_build(config, toolchain):
+    provenance = ROOT / "build" / toolchain / "src/provenance.json"
+    if not provenance.is_file():
+        raise ValueError("No prepared sources; run without --skip-build first")
+    record = json.loads(provenance.read_text())
+    if record["fingerprint"] != fingerprint(source_plan(toolchain)):
+        raise ValueError("Source configuration changed; run without --skip-build to regenerate the compiler and Oracle")
+    target, binary = built_target(config, toolchain)
+    return target, binary, record
 
 
 def build_case(name, toolchain=None, force=False):
@@ -51,8 +62,7 @@ def main():
         raise ValueError("Workload filename must use letters, digits, underscores or hyphens")
     with toolchain_lock(selected):
         if args.skip_build:
-            target, binary = built_target(config, selected)
-            build = json.loads((ROOT / "build" / selected / "src/provenance.json").read_text())
+            target, binary, build = existing_build(config, selected)
         else:
             target, binary, build = build_case(args.case, selected, args.force)
         env = process_env(selected)
