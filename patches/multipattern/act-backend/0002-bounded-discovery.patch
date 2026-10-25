@@ -1,0 +1,1226 @@
+diff --git a/act_backend/generic/src/isel/bounded_search.rs b/act_backend/generic/src/isel/bounded_search.rs
+new file mode 100644
+--- /dev/null
++++ b/act_backend/generic/src/isel/bounded_search.rs
+@@ -0,0 +1,216 @@
++//! Budgeted access to egg's non-preemptible MultiPattern search.
++//!
++//! A cursor belongs to one query, anchor, and immutable graph snapshot. Prefix
++//! replay is unavoidable with egg's public API and is charged as real work.
++use std::collections::VecDeque;
++use std::time::Instant;
++
++use crate::ir::egraph::{TensorInfo, TensorOp};
++use egg::{EGraph, Id, MultiPattern, Searcher, Subst};
++use serde::Serialize;
++
++/// Work limits scoped by the owner; Discovery creates one budget per refresh.
++/// They are independent of its monotonic lifetime registered-tuple cap.
++#[derive(Clone, Copy, Debug, Serialize)]
++pub struct SearchLimits {
++    pub raw_matches: usize,
++    pub search_calls: usize,
++    pub attempts: usize,
++}
++
++impl Default for SearchLimits {
++    fn default() -> Self {
++        Self {
++            raw_matches: 4096,
++            search_calls: 4096,
++            attempts: 4096,
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
++#[serde(rename_all = "snake_case")]
++pub enum StopReason {
++    Exhausted,
++    CandidateTarget,
++    TupleLimit,
++    RawMatchLimit,
++    SearchCallLimit,
++    AttemptLimit,
++    Deadline,
++}
++
++#[derive(Clone, Debug, Serialize)]
++pub struct SearchReport {
++    pub limits: SearchLimits,
++    pub search_calls: usize,
++    /// Includes every returned substitution, including replayed prefixes.
++    pub raw_matches: usize,
++    pub replayed_matches: usize,
++    pub attempts: usize,
++    pub rejected_types: usize,
++    pub rejected_inputs: usize,
++    pub duplicates: usize,
++    pub accepted: usize,
++    pub registered: usize,
++    pub complete: bool,
++    pub pending_work: bool,
++    pub stop_reason: StopReason,
++}
++
++pub struct SearchBudget {
++    limits: SearchLimits,
++    deadline: Option<Instant>,
++    pub report: SearchReport,
++}
++
++impl SearchBudget {
++    pub fn new(limits: SearchLimits, deadline: Option<Instant>) -> Self {
++        Self {
++            limits,
++            deadline,
++            report: SearchReport {
++                limits,
++                search_calls: 0,
++                raw_matches: 0,
++                replayed_matches: 0,
++                attempts: 0,
++                rejected_types: 0,
++                rejected_inputs: 0,
++                duplicates: 0,
++                accepted: 0,
++                registered: 0,
++                complete: false,
++                pending_work: true,
++                stop_reason: StopReason::Exhausted,
++            },
++        }
++    }
++
++    pub fn deadline(&self) -> Option<Instant> {
++        self.deadline
++    }
++
++    pub fn check_deadline(&self) -> Result<(), StopReason> {
++        if self.deadline.is_some_and(|end| Instant::now() >= end) {
++            Err(StopReason::Deadline)
++        } else {
++            Ok(())
++        }
++    }
++
++    pub fn try_attempt(&mut self) -> Result<(), StopReason> {
++        self.check_deadline()?;
++        if self.report.attempts >= self.limits.attempts {
++            return Err(StopReason::AttemptLimit);
++        }
++        self.report.attempts += 1;
++        Ok(())
++    }
++
++    fn allowance(&self, consumed: usize, desired: usize) -> Result<usize, StopReason> {
++        self.check_deadline()?;
++        if self.report.search_calls >= self.limits.search_calls {
++            return Err(StopReason::SearchCallLimit);
++        }
++        let remaining = self
++            .limits
++            .raw_matches
++            .saturating_sub(self.report.raw_matches);
++        if remaining <= consumed {
++            // One more item requires replaying `consumed` earlier matches.
++            return Err(StopReason::RawMatchLimit);
++        }
++        Ok(desired.min(remaining))
++    }
++
++    pub fn finish(&mut self, reason: StopReason) {
++        self.report.stop_reason = reason;
++        self.report.complete = reason == StopReason::Exhausted;
++        self.report.pending_work = !self.report.complete;
++    }
++}
++
++pub enum SearchStep {
++    Match { anchor: Id, subst: Subst },
++    Exhausted,
++    Truncated(StopReason),
++}
++
++/// Owns no graph borrow, but must never be resumed against a changed snapshot.
++/// The caller may supply an anchor-specific query (needed for bare identities).
++pub struct MatchCursor {
++    anchor: Id,
++    consumed: usize,
++    prefix_len: usize,
++    buffered: VecDeque<Subst>,
++    finished: bool,
++}
++
++impl MatchCursor {
++    pub fn new(anchor: Id) -> Self {
++        Self {
++            anchor,
++            consumed: 0,
++            prefix_len: 0,
++            buffered: VecDeque::new(),
++            finished: false,
++        }
++    }
++
++    /// Performs at most one egg search. Returned prefixes retain egg's order:
++    /// sorting a growing prefix before skipping `consumed` would lose matches.
++    pub fn step(
++        &mut self,
++        graph: &EGraph<TensorOp, TensorInfo>,
++        query: &MultiPattern<TensorOp>,
++        budget: &mut SearchBudget,
++    ) -> SearchStep {
++        if let Err(reason) = budget.check_deadline() {
++            return SearchStep::Truncated(reason);
++        }
++        if let Some(subst) = self.buffered.pop_front() {
++            self.consumed += 1;
++            return SearchStep::Match {
++                anchor: self.anchor,
++                subst,
++            };
++        }
++        if self.finished {
++            return SearchStep::Exhausted;
++        }
++        let desired = self.prefix_len.saturating_mul(2).max(1);
++        let requested = match budget.allowance(self.consumed, desired) {
++            Ok(value) => value,
++            Err(reason) => return SearchStep::Truncated(reason),
++        };
++        // No cancellation callback exists in egg 0.10. A single call can exceed
++        // the deadline or do expensive work even when it returns zero matches.
++        let substs = query
++            .search_eclass_with_limit(graph, self.anchor, requested)
++            .map(|matches| matches.substs)
++            .unwrap_or_default();
++        budget.report.search_calls += 1;
++        budget.report.raw_matches += substs.len();
++        budget.report.replayed_matches += self.consumed.min(substs.len());
++        assert!(
++            substs.len() >= self.consumed,
++            "search cursor snapshot/query changed"
++        );
++        self.finished = substs.len() < requested;
++        self.prefix_len = substs.len();
++        self.buffered = substs.into_iter().skip(self.consumed).collect();
++        if let Err(reason) = budget.check_deadline() {
++            return SearchStep::Truncated(reason);
++        }
++        if let Some(subst) = self.buffered.pop_front() {
++            self.consumed += 1;
++            SearchStep::Match {
++                anchor: self.anchor,
++                subst,
++            }
++        } else {
++            SearchStep::Exhausted
++        }
++    }
++}
+diff --git a/act_backend/generic/src/isel/discovery.rs b/act_backend/generic/src/isel/discovery.rs
+--- a/act_backend/generic/src/isel/discovery.rs
++++ b/act_backend/generic/src/isel/discovery.rs
+@@ -3,10 +3,14 @@
+ use std::collections::{HashSet, VecDeque};
+ use std::time::Instant;
+ 
++use super::bounded_search::{
++    MatchCursor, SearchBudget, SearchLimits, SearchReport, SearchStep, StopReason,
++};
++
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+ use crate::isel::rewrites;
+ use crate::isel::rewrites::joint::{Derivations, ResultMatch};
+-use egg::{EGraph, ENodeOrVar, Id, Language, MultiPattern, PatternAst, Searcher, Var};
++use egg::{EGraph, ENodeOrVar, Id, Language, MultiPattern, PatternAst, Subst, Var};
+ 
+ #[derive(Clone, PartialEq, Eq, Hash)]
+ struct Match {
+@@ -89,39 +93,60 @@
+     MultiPattern::new(clauses)
+ }
+ 
+-fn joint_matches(
+-    graph: &EGraph<TensorOp, TensorInfo>,
+-    patterns: &[(&str, crate::ir::dtype::Dtype, Vec<Option<i32>>)],
+-    limit: usize,
+-) -> VecDeque<Vec<Match>> {
+-    if patterns.is_empty() || limit == 0 {
+-        return VecDeque::new();
+-    }
+-    let asts: Vec<PatternAst<TensorOp>> = patterns
+-        .iter()
+-        .map(|(text, _, _)| text.parse().unwrap())
+-        .collect();
+-    let roots: Vec<Var> = (0..patterns.len())
+-        .map(|slot| format!("?__act_result_{slot}").parse().unwrap())
+-        .collect();
+-    let operands: Vec<Vec<Var>> = asts
+-        .iter()
+-        .map(|ast| {
+-            let mut vars: Vec<_> = ast
+-                .as_ref()
+-                .iter()
+-                .filter_map(|node| match node {
+-                    ENodeOrVar::Var(var) => Some(input_var(*var)),
+-                    _ => None,
+-                })
+-                .collect();
+-            vars.sort();
+-            vars.dedup();
+-            vars
+-        })
+-        .collect();
+-    let compatible = |slot: usize, id: Id| {
+-        let (_, dtype, shape) = &patterns[slot];
++type TypedPattern<'a> = (&'a str, crate::ir::dtype::Dtype, Vec<Option<i32>>);
++
++/// Compiled once; only the graph-dependent anchor and cursor state is refreshed.
++struct JointQuery<'a> {
++    patterns: Vec<TypedPattern<'a>>,
++    asts: Vec<PatternAst<TensorOp>>,
++    roots: Vec<Var>,
++    operands: Vec<Vec<Var>>,
++    first: usize,
++    query: Option<MultiPattern<TensorOp>>,
++}
++
++impl<'a> JointQuery<'a> {
++    fn new(patterns: &[TypedPattern<'a>]) -> Self {
++        assert!(!patterns.is_empty());
++        let asts: Vec<PatternAst<TensorOp>> = patterns
++            .iter()
++            .map(|(text, _, _)| text.parse().unwrap())
++            .collect();
++        let roots: Vec<Var> = (0..patterns.len())
++            .map(|slot| format!("?__act_result_{slot}").parse().unwrap())
++            .collect();
++        let operands = asts
++            .iter()
++            .map(|ast| {
++                let mut vars: Vec<_> = ast
++                    .as_ref()
++                    .iter()
++                    .filter_map(|node| match node {
++                        ENodeOrVar::Var(var) => Some(input_var(*var)),
++                        _ => None,
++                    })
++                    .collect();
++                vars.sort();
++                vars.dedup();
++                vars
++            })
++            .collect();
++        let first = asts
++            .iter()
++            .position(|ast| matches!(&ast[ast.root()], ENodeOrVar::ENode(_)));
++        let query = first.map(|slot| joint_query(&asts, &roots, slot, None));
++        Self {
++            patterns: patterns.to_vec(),
++            asts,
++            roots,
++            operands,
++            first: first.unwrap_or(0),
++            query,
++        }
++    }
++
++    fn compatible(&self, graph: &EGraph<TensorOp, TensorInfo>, slot: usize, id: Id) -> bool {
++        let (_, dtype, shape) = &self.patterns[slot];
+         let info = &graph[id].data;
+         crate::ir::egraph::tuple_elements(graph, id).is_none()
+             && info.dtype == *dtype
+@@ -131,117 +156,308 @@
+                 .iter()
+                 .zip(shape)
+                 .all(|(actual, expected)| expected.is_none_or(|expected| *actual == expected))
+-    };
+-    let first = asts
+-        .iter()
+-        .position(|ast| matches!(&ast[ast.root()], ENodeOrVar::ENode(_)));
+-    let query = first.map(|slot| joint_query(&asts, &roots, slot, None));
+-    let first = first.unwrap_or(0);
++    }
++
++    fn matched(&self, graph: &EGraph<TensorOp, TensorInfo>, subst: &Subst) -> Option<Vec<Match>> {
++        if !self
++            .roots
++            .iter()
++            .enumerate()
++            .all(|(slot, var)| self.compatible(graph, slot, subst[*var]))
++        {
++            return None;
++        }
++        Some(
++            self.roots
++                .iter()
++                .enumerate()
++                .map(|(slot, var)| Match {
++                    id: graph.find(subst[*var]),
++                    operands: self.operands[slot]
++                        .iter()
++                        .map(|var| graph.find(subst[*var]))
++                        .collect(),
++                })
++                .collect(),
++        )
++    }
++}
++
++struct InstructionStream {
++    anchors: Vec<Id>,
++    position: usize,
++    cursor: Option<MatchCursor>,
++    anchored_query: Option<MultiPattern<TensorOp>>,
++    active: bool,
++}
++
++enum StreamStep {
++    Match(Subst),
++    Pending,
++    Exhausted,
++    Truncated(StopReason),
++}
++
++impl InstructionStream {
++    fn new(graph: &EGraph<TensorOp, TensorInfo>, query: &JointQuery<'_>) -> Self {
++        let mut anchors: Vec<_> = graph
++            .classes()
++            .filter(|class| query.compatible(graph, query.first, class.id))
++            .map(|class| class.id)
++            .collect();
++        anchors.sort_unstable();
++        let active = !anchors.is_empty();
++        Self {
++            anchors,
++            position: 0,
++            cursor: None,
++            anchored_query: None,
++            active,
++        }
++    }
++
++    /// One candidate or one unsuccessful egg call is one scheduling quantum.
++    fn step(
++        &mut self,
++        graph: &EGraph<TensorOp, TensorInfo>,
++        query: &JointQuery<'_>,
++        budget: &mut SearchBudget,
++    ) -> StreamStep {
++        if !self.active {
++            return StreamStep::Exhausted;
++        }
++        let anchor = self.anchors[self.position];
++        if self.cursor.is_none() {
++            self.cursor = Some(MatchCursor::new(anchor));
++            if query.query.is_none() {
++                self.anchored_query = Some(joint_query(
++                    &query.asts,
++                    &query.roots,
++                    query.first,
++                    graph[anchor].nodes.first(),
++                ));
++            }
++        }
++        let pattern = query
++            .query
++            .as_ref()
++            .or(self.anchored_query.as_ref())
++            .unwrap();
++        match self.cursor.as_mut().unwrap().step(graph, pattern, budget) {
++            SearchStep::Match { subst, .. } => StreamStep::Match(subst),
++            SearchStep::Truncated(reason) => {
++                self.active = false;
++                StreamStep::Truncated(reason)
++            }
++            SearchStep::Exhausted => {
++                self.position += 1;
++                self.cursor = None;
++                self.anchored_query = None;
++                self.active = self.position < self.anchors.len();
++                if self.active {
++                    StreamStep::Pending
++                } else {
++                    StreamStep::Exhausted
++                }
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++fn joint_matches(
++    graph: &EGraph<TensorOp, TensorInfo>,
++    patterns: &[TypedPattern<'_>],
++    limit: usize,
++) -> VecDeque<Vec<Match>> {
++    if patterns.is_empty() || limit == 0 {
++        return VecDeque::new();
++    }
++    let query = JointQuery::new(patterns);
++    let mut stream = InstructionStream::new(graph, &query);
++    let mut budget = SearchBudget::new(SearchLimits::default(), None);
+     let mut found = VecDeque::new();
+-    for class in graph.classes().filter(|class| compatible(first, class.id)) {
+-        let anchored;
+-        let query = if let Some(query) = &query {
+-            query
+-        } else {
+-            anchored = joint_query(&asts, &roots, first, class.nodes.first());
+-            &anchored
++    let mut unique = HashSet::new();
++    while stream.active && found.len() < limit {
++        match stream.step(graph, &query, &mut budget) {
++            StreamStep::Match(subst) => {
++                if budget.try_attempt().is_err() {
++                    break;
++                }
++                if let Some(matched) = query.matched(graph, &subst) {
++                    if unique.insert(matched.clone()) {
++                        found.push_back(matched);
++                    }
++                }
++            }
++            StreamStep::Truncated(_) => break,
++            _ => {}
++        }
++    }
++    found
++}
++
++struct Candidate {
++    results: Vec<Match>,
++    #[cfg(test)]
++    instruction: usize,
++}
++
++/// Matching and feasibility use one immutable snapshot. Only bounded useful
++/// candidates survive into batch(); all ISA creation remains in generated rules.
++/// Tuple count is lifetime state; raw/call/attempt work limits reset per refresh.
++pub struct Discovery {
++    queries: Vec<JointQuery<'static>>,
++    pending: VecDeque<Candidate>,
++    seen: HashSet<Vec<Id>>,
++    registered_total: usize,
++    limit: usize,
++    limits: SearchLimits,
++    report: SearchReport,
++}
++
++impl Discovery {
++    pub fn new(graph: &EGraph<TensorOp, TensorInfo>, limit: usize) -> Self {
++        Self::with_limits(graph, limit, SearchLimits::default(), None)
++    }
++
++    pub fn with_limits(
++        graph: &EGraph<TensorOp, TensorInfo>,
++        limit: usize,
++        limits: SearchLimits,
++        deadline: Option<Instant>,
++    ) -> Self {
++        let queries = rewrites::multi_result_typed_patterns()
++            .iter()
++            .filter(|(_, patterns)| !patterns.is_empty())
++            .map(|(_, patterns)| JointQuery::new(patterns))
++            .collect();
++        let mut discovery = Self {
++            queries,
++            pending: VecDeque::new(),
++            seen: HashSet::new(),
++            registered_total: 0,
++            limit,
++            limits,
++            report: SearchBudget::new(limits, deadline).report,
+         };
+-        let remaining = limit - found.len();
+-        let mut raw_limit = remaining;
+-        loop {
+-            // Search the ACT graph itself. Widen a rejected prefix so that
+-            // ill-typed later results cannot consume the valid-match budget.
+-            let matches = query.search_eclass_with_limit(graph, class.id, raw_limit);
+-            let substs = matches.map(|matched| matched.substs).unwrap_or_default();
+-            let mut unique = HashSet::new();
+-            let accepted: Vec<_> = substs
+-                .iter()
+-                .filter(|subst| {
+-                    roots
+-                        .iter()
+-                        .enumerate()
+-                        .all(|(slot, var)| compatible(slot, subst[*var]))
+-                })
+-                .map(|subst| {
+-                    roots
+-                        .iter()
+-                        .enumerate()
+-                        .map(|(slot, var)| Match {
+-                            id: graph.find(subst[*var]),
+-                            operands: operands[slot]
+-                                .iter()
+-                                .map(|var| graph.find(subst[*var]))
+-                                .collect(),
+-                        })
+-                        .collect::<Vec<_>>()
+-                })
+-                .filter(|matched| unique.insert(matched.clone()))
+-                .take(remaining)
+-                .collect();
+-            if accepted.len() == remaining || substs.len() < raw_limit || raw_limit == usize::MAX {
+-                found.extend(accepted);
+-                break;
+-            }
+-            raw_limit = raw_limit.saturating_mul(2);
+-        }
+-        if found.len() == limit {
+-            break;
+-        }
+-    }
+-    found
+-}
+-
+-/// Candidate registration is persistent; matching and derivations are snapshots.
+-/// The global tuple cap is shared by all refreshes, not reset by each hook.
+-pub struct Discovery {
+-    spaces: Vec<VecDeque<Vec<Match>>>,
+-    derivations: Derivations,
+-    seen: HashSet<Vec<Id>>,
+-    cursor: usize,
+-    attempts: usize,
+-    limit: usize,
+-}
+-
+-impl Discovery {
++        discovery.refresh_until(graph, deadline);
++        discovery
++    }
++
++    pub fn report(&self) -> &SearchReport {
++        &self.report
++    }
++
++    pub fn registered_count(&self) -> usize {
++        self.registered_total
++    }
++
++    /// Queue exhaustion is not evidence that the search was complete; report()
++    /// distinguishes saturation from a work cap or deadline.
+     pub fn exhausted(&self) -> bool {
+-        self.seen.len() >= self.limit
+-            || self.attempts >= self.limit.saturating_mul(64)
+-            || self.spaces.iter().all(VecDeque::is_empty)
+-    }
+-
+-    pub fn new(graph: &EGraph<TensorOp, TensorInfo>, limit: usize) -> Self {
+-        let mut discovery = Self {
+-            spaces: vec![],
+-            derivations: Derivations::default(),
+-            seen: HashSet::new(),
+-            cursor: 0,
+-            attempts: 0,
+-            limit,
+-        };
+-        discovery.refresh(graph);
+-        discovery
+-    }
+-
+-    /// Search a fixed graph once; batch consumption never re-queries a changed
+-    /// graph with an offset into an unstable search prefix. The snapshot bounds
+-    /// accepted matches; raw search prefixes can grow to skip ill-typed matches.
+-    /// egg cannot interrupt a search mid-call.
++        self.registered_total >= self.limit || self.pending.is_empty()
++    }
++
+     pub fn refresh(&mut self, graph: &EGraph<TensorOp, TensorInfo>) {
++        self.refresh_until(graph, None);
++    }
++
++    pub fn refresh_until(
++        &mut self,
++        graph: &EGraph<TensorOp, TensorInfo>,
++        deadline: Option<Instant>,
++    ) {
+         self.seen = self
+             .seen
+             .iter()
+             .map(|ids| ids.iter().map(|&id| graph.find(id)).collect())
+             .collect();
+-        self.spaces.clear();
+-        self.attempts = 0;
+-        if self.seen.len() >= self.limit {
++        self.pending.clear();
++        let mut budget = SearchBudget::new(self.limits, deadline);
++        if self.registered_total >= self.limit {
++            budget.finish(StopReason::TupleLimit);
++            self.report = budget.report;
+             return;
+         }
+-        self.spaces = rewrites::multi_result_typed_patterns()
++        if let Err(reason) = budget.check_deadline() {
++            budget.finish(reason);
++            self.report = budget.report;
++            return;
++        }
++        let target = self.limit - self.registered_total;
++        let mut streams: Vec<_> = self
++            .queries
+             .iter()
+-            .map(|(_, patterns)| joint_matches(graph, patterns, self.limit.saturating_mul(64)))
++            .map(|query| InstructionStream::new(graph, query))
+             .collect();
+-        self.derivations = Derivations::new(graph);
++        let mut derivations = Derivations::new(graph);
++        let mut reserved = self.seen.clone();
++        let mut truncated = None;
++        let mut stop = None;
++        // ISA declaration order, one raw candidate/no-match call per turn;
++        // anchors increase by e-class ID. Prefix order is egg's stable order for
++        // this exact snapshot, not a promise across different graph histories.
++        while streams.iter().any(|stream| stream.active) && stop.is_none() {
++            for (index, stream) in streams.iter_mut().enumerate() {
++                if !stream.active {
++                    continue;
++                }
++                if let Err(reason) = budget.check_deadline() {
++                    stop = Some(reason);
++                    break;
++                }
++                match stream.step(graph, &self.queries[index], &mut budget) {
++                    StreamStep::Match(subst) => {
++                        if let Err(reason) = budget.try_attempt() {
++                            stop = Some(reason);
++                            break;
++                        }
++                        let Some(selected) = self.queries[index].matched(graph, &subst) else {
++                            budget.report.rejected_types += 1;
++                            continue;
++                        };
++                        let children: Vec<_> = selected.iter().map(|item| item.id).collect();
++                        if reserved.contains(&children) {
++                            budget.report.duplicates += 1;
++                            continue;
++                        }
++                        let results: Vec<_> = selected
++                            .iter()
++                            .map(|item| ResultMatch {
++                                value: item.id,
++                                operands: item.operands.clone(),
++                            })
++                            .collect();
++                        if !derivations.inputs_available(&results, budget.deadline()) {
++                            budget.report.rejected_inputs += 1;
++                            if let Err(reason) = budget.check_deadline() {
++                                stop = Some(reason);
++                                break;
++                            }
++                            continue;
++                        }
++                        reserved.insert(children);
++                        self.pending.push_back(Candidate {
++                            results: selected,
++                            #[cfg(test)]
++                            instruction: index,
++                        });
++                        budget.report.accepted += 1;
++                        if self.pending.len() == target {
++                            stop = Some(StopReason::CandidateTarget);
++                            break;
++                        }
++                    }
++                    StreamStep::Truncated(reason) => {
++                        truncated.get_or_insert(reason);
++                    }
++                    _ => {}
++                }
++            }
++        }
++        budget.finish(stop.or(truncated).unwrap_or(StopReason::Exhausted));
++        self.report = budget.report;
+     }
+ 
+     pub fn batch(
+@@ -251,46 +467,18 @@
+         deadline: Instant,
+     ) -> usize {
+         let mut added = 0;
+-        if self.spaces.is_empty() {
+-            return 0;
+-        }
+-        let start = self.cursor;
+-        let index = loop {
+-            let index = self.cursor % self.spaces.len();
+-            self.cursor += 1;
+-            if !self.spaces[index].is_empty() {
+-                break index;
+-            }
+-            if self.cursor - start >= self.spaces.len() {
+-                return 0;
+-            }
+-        };
+-        while added < count
+-            && self.seen.len() < self.limit
+-            && self.attempts < self.limit.saturating_mul(64)
+-            && Instant::now() < deadline
+-        {
+-            let Some(selected) = self.spaces[index].pop_front() else {
++        while added < count && self.registered_total < self.limit && Instant::now() < deadline {
++            let Some(candidate) = self.pending.pop_front() else {
+                 break;
+             };
+-            self.attempts += 1;
+-            let children: Vec<_> = selected.iter().map(|item| graph.find(item.id)).collect();
+-            if self.seen.contains(&children) {
++            let children: Vec<_> = candidate
++                .results
++                .iter()
++                .map(|item| graph.find(item.id))
++                .collect();
++            if !self.seen.insert(children.clone()) {
+                 continue;
+             }
+-            let results: Vec<_> = selected
+-                .into_iter()
+-                .map(|item| ResultMatch {
+-                    value: item.id,
+-                    operands: item.operands,
+-                })
+-                .collect();
+-            // A shared binding is guaranteed by MultiPattern, but input
+-            // feasibility remains specific to this ISA match.
+-            if !self.derivations.inputs_available(&results, Some(deadline)) {
+-                continue;
+-            }
+-            self.seen.insert(children.clone());
+             let tuple = graph.add(TensorOp::OpTuple(children.clone()));
+             for (index, value) in children.into_iter().enumerate() {
+                 let info = graph[value].data.clone();
+@@ -299,8 +487,10 @@
+                 graph.union(value, projection);
+             }
+             added += 1;
+-        }
+-        graph.rebuild();
++            self.registered_total += 1;
++        }
++        graph.rebuild();
++        self.report.registered += added;
+         added
+     }
+ }
+@@ -723,3 +913,368 @@
+         assert_eq!(found.len(), pairs.len());
+     }
+ }
++
++#[cfg(test)]
++mod budget_tests {
++    use super::*;
++    use crate::ir::dtype::Dtype;
++    use std::time::Duration;
++
++    type Graph = EGraph<TensorOp, TensorInfo>;
++
++    fn tensor(graph: &mut Graph, node: TensorOp, shape: &[i32]) -> Id {
++        let id = graph.add(node);
++        graph.set_analysis_data(
++            id,
++            TensorInfo {
++                dtype: Dtype::BF16,
++                shape: shape.to_vec(),
++                is_const: false,
++            },
++        );
++        id
++    }
++
++    fn matrix(graph: &mut Graph, node: TensorOp) -> Id {
++        tensor(graph, node, &[64, 64])
++    }
++
++    fn pattern(text: &'static str) -> TypedPattern<'static> {
++        (text, Dtype::BF16, vec![Some(64), Some(64)])
++    }
++
++    fn dots(count: usize) -> Graph {
++        let mut graph = Graph::default();
++        for i in 0..count {
++            let a = matrix(&mut graph, TensorOp::Var(format!("a{i}")));
++            let b = matrix(&mut graph, TensorOp::Var(format!("b{i}")));
++            matrix(&mut graph, TensorOp::OpDot([a, b]));
++        }
++        graph.rebuild();
++        graph
++    }
++
++    fn discover(
++        graph: &Graph,
++        rules: Vec<Vec<TypedPattern<'static>>>,
++        limit: usize,
++        limits: SearchLimits,
++        deadline: Option<Instant>,
++    ) -> Discovery {
++        let mut discovery = Discovery {
++            queries: rules
++                .iter()
++                .map(|patterns| JointQuery::new(patterns))
++                .collect(),
++            pending: VecDeque::new(),
++            seen: HashSet::new(),
++            registered_total: 0,
++            limit,
++            limits,
++            report: SearchBudget::new(limits, deadline).report,
++        };
++        discovery.refresh_until(graph, deadline);
++        discovery
++    }
++
++    fn pair() -> Vec<TypedPattern<'static>> {
++        vec![pattern("(dot ?p0 ?p1)"), pattern("(dot ?p2 ?p3)")]
++    }
++
++    fn selected(discovery: &Discovery) -> Vec<(usize, Vec<Id>)> {
++        discovery
++            .pending
++            .iter()
++            .map(|candidate| {
++                (
++                    candidate.instruction,
++                    candidate.results.iter().map(|item| item.id).collect(),
++                )
++            })
++            .collect()
++    }
++
++    #[test]
++    fn small_tuple_target_stops_preparation_before_eager_4096_matches() {
++        let graph = dots(128);
++        let discovery = discover(&graph, vec![pair()], 1, SearchLimits::default(), None);
++        assert_eq!(discovery.pending.len(), 1);
++        assert_eq!(discovery.report.raw_matches, 1);
++        assert_eq!(discovery.report.attempts, 1);
++        assert_eq!(discovery.report.stop_reason, StopReason::CandidateTarget);
++        assert!(!discovery.report.complete);
++        assert!(discovery.report.pending_work);
++    }
++
++    #[test]
++    fn replayed_prefixes_and_rejected_types_obey_the_raw_budget() {
++        let mut graph = dots(1);
++        for i in 0..96 {
++            let x = matrix(&mut graph, TensorOp::Var(format!("wrong{i}")));
++            matrix(&mut graph, TensorOp::OpCopy([x]));
++        }
++        graph.rebuild();
++        let patterns = vec![
++            pattern("(dot ?p0 ?p1)"),
++            ("(copy ?p2)", Dtype::BF16, vec![Some(32), Some(64)]),
++        ];
++        let limits = SearchLimits {
++            raw_matches: 5,
++            search_calls: 1000,
++            attempts: 1000,
++        };
++        let discovery = discover(&graph, vec![patterns], 1, limits, None);
++        assert!(discovery.pending.is_empty());
++        assert!(discovery.report.raw_matches <= 5);
++        assert!(discovery.report.replayed_matches > 0);
++        assert!(discovery.report.rejected_types > 0);
++        assert_eq!(discovery.report.stop_reason, StopReason::RawMatchLimit);
++        assert!(!discovery.report.complete);
++    }
++
++    #[test]
++    fn unsuccessful_searches_are_limited_and_do_not_starve_another_isa() {
++        let mut graph = Graph::default();
++        let a = matrix(&mut graph, TensorOp::Var("a".into()));
++        let b = matrix(&mut graph, TensorOp::Var("b".into()));
++        matrix(&mut graph, TensorOp::OpDot([a, b]));
++        graph.rebuild();
++        let absent = vec![pattern("(add ?p0 ?p1)"), pattern("(copy ?p2)")];
++        let identity = vec![pattern("?p0"), pattern("?p1")];
++        let limits = SearchLimits {
++            raw_matches: 10,
++            search_calls: 2,
++            attempts: 10,
++        };
++        let discovery = discover(&graph, vec![absent, identity], 1, limits, None);
++        assert_eq!(discovery.pending.len(), 1);
++        assert_eq!(discovery.pending[0].instruction, 1);
++        assert_eq!(discovery.report.search_calls, 2);
++        assert_eq!(discovery.report.raw_matches, 1);
++    }
++
++    #[test]
++    fn call_budget_stops_a_scan_that_produces_no_matches() {
++        let graph = dots(20);
++        let patterns = vec![pattern("(add ?p0 ?p1)"), pattern("(copy ?p2)")];
++        let limits = SearchLimits {
++            raw_matches: 100,
++            search_calls: 3,
++            attempts: 100,
++        };
++        let discovery = discover(&graph, vec![patterns], 1, limits, None);
++        assert_eq!(discovery.report.search_calls, 3);
++        assert_eq!(discovery.report.raw_matches, 0);
++        assert_eq!(discovery.report.stop_reason, StopReason::SearchCallLimit);
++        assert!(discovery.report.pending_work);
++    }
++
++    #[test]
++    fn zero_limits_and_expired_deadlines_do_not_claim_exhaustive_search() {
++        let graph = dots(2);
++        for (limits, deadline, reason) in [
++            (
++                SearchLimits {
++                    raw_matches: 0,
++                    ..SearchLimits::default()
++                },
++                None,
++                StopReason::RawMatchLimit,
++            ),
++            (
++                SearchLimits {
++                    search_calls: 0,
++                    ..SearchLimits::default()
++                },
++                None,
++                StopReason::SearchCallLimit,
++            ),
++            (
++                SearchLimits {
++                    attempts: 0,
++                    ..SearchLimits::default()
++                },
++                None,
++                StopReason::AttemptLimit,
++            ),
++            (
++                SearchLimits::default(),
++                Some(Instant::now()),
++                StopReason::Deadline,
++            ),
++        ] {
++            let discovery = discover(&graph, vec![pair()], 1, limits, deadline);
++            assert!(discovery.pending.is_empty());
++            assert_eq!(discovery.report.stop_reason, reason);
++            assert!(!discovery.report.complete);
++            assert_eq!(discovery.report.attempts, 0);
++            if reason != StopReason::AttemptLimit {
++                assert_eq!(discovery.report.search_calls, 0);
++            }
++        }
++        let disabled = discover(&graph, vec![pair()], 0, SearchLimits::default(), None);
++        assert_eq!(disabled.report.stop_reason, StopReason::TupleLimit);
++        assert!(!disabled.report.complete);
++        let empty = discover(&graph, vec![], 64, SearchLimits::default(), None);
++        assert!(empty.report.complete);
++        assert!(!empty.report.pending_work);
++        assert_eq!(empty.report.stop_reason, StopReason::Exhausted);
++    }
++
++    #[test]
++    fn same_snapshot_and_limits_select_the_same_candidate_order() {
++        let graph = dots(30);
++        let reference = discover(&graph, vec![pair()], 17, SearchLimits::default(), None);
++        for _ in 0..5 {
++            let discovery = discover(&graph, vec![pair()], 17, SearchLimits::default(), None);
++            assert_eq!(selected(&discovery), selected(&reference));
++            assert_eq!(discovery.report.raw_matches, reference.report.raw_matches);
++            assert_eq!(discovery.report.search_calls, reference.report.search_calls);
++        }
++    }
++
++    #[test]
++    fn multiple_isas_receive_turns_in_declaration_order() {
++        let mut graph = Graph::default();
++        let a = matrix(&mut graph, TensorOp::Var("a".into()));
++        let b = matrix(&mut graph, TensorOp::Var("b".into()));
++        let dot = matrix(&mut graph, TensorOp::OpDot([a, b]));
++        matrix(&mut graph, TensorOp::OpCopy([dot]));
++        graph.rebuild();
++        let rules = vec![
++            vec![pattern("?p0"), pattern("?p1")],
++            vec![pattern("?p0"), pattern("?p1"), pattern("?p2")],
++        ];
++        let discovery = discover(&graph, rules, 4, SearchLimits::default(), None);
++        assert_eq!(
++            selected(&discovery)
++                .iter()
++                .map(|(rule, _)| *rule)
++                .collect::<Vec<_>>(),
++            vec![0, 1, 0, 1]
++        );
++    }
++
++    #[test]
++    fn three_outputs_preserve_shared_inputs_and_port_order() {
++        let mut graph = Graph::default();
++        let x = matrix(&mut graph, TensorOp::Var("x".into()));
++        let y = matrix(&mut graph, TensorOp::Var("y".into()));
++        let square = matrix(&mut graph, TensorOp::OpMultiply([x, x]));
++        let copy_x = matrix(&mut graph, TensorOp::OpCopy([x]));
++        let copy_y = matrix(&mut graph, TensorOp::OpCopy([y]));
++        graph.rebuild();
++        let rules = vec![vec![
++            pattern("(multiply ?p0 ?p0__use1)"),
++            pattern("(copy ?p0__use2)"),
++            pattern("?p0__use3"),
++        ]];
++        let mut discovery = discover(&graph, rules, 64, SearchLimits::default(), None);
++        assert_eq!(
++            selected(&discovery),
++            vec![(
++                0,
++                vec![graph.find(square), graph.find(copy_x), graph.find(x)]
++            )]
++        );
++        assert!(discovery.report.complete);
++        assert_eq!(
++            discovery.batch(&mut graph, 64, Instant::now() + Duration::from_secs(2)),
++            1
++        );
++        let tuple = graph
++            .lookup(TensorOp::OpTuple(vec![
++                graph.find(square),
++                graph.find(copy_x),
++                graph.find(x),
++            ]))
++            .unwrap();
++        for (port, value) in [square, copy_x, x].into_iter().enumerate() {
++            let projection = graph
++                .lookup(TensorOp::OpGetTupleElement(port, [tuple]))
++                .unwrap();
++            assert_eq!(graph.find(projection), graph.find(value));
++        }
++        assert!(graph
++            .lookup(TensorOp::OpTuple(vec![
++                graph.find(square),
++                graph.find(copy_y),
++                graph.find(x)
++            ]))
++            .is_none());
++    }
++
++    #[test]
++    fn alternative_bindings_of_one_result_tuple_do_not_fill_the_target() {
++        let mut graph = dots(3);
++        let dots: Vec<_> = graph
++            .classes()
++            .filter(|class| {
++                class
++                    .nodes
++                    .iter()
++                    .any(|node| matches!(node, TensorOp::OpDot(_)))
++            })
++            .map(|class| class.id)
++            .collect();
++        for &other in &dots[1..] {
++            graph.union(dots[0], other);
++        }
++        graph.rebuild();
++        let discovery = discover(&graph, vec![pair()], 2, SearchLimits::default(), None);
++        assert_eq!(discovery.pending.len(), 1);
++        assert!(discovery.report.duplicates > 0);
++        assert_eq!(discovery.report.accepted, 1);
++        assert!(discovery.report.complete);
++    }
++
++    #[test]
++    fn eclass_unions_do_not_replenish_the_lifetime_registration_budget() {
++        let mut graph = dots(2);
++        let mut discovery = discover(&graph, vec![pair()], 2, SearchLimits::default(), None);
++        let selected_ids: Vec<_> = discovery
++            .pending
++            .iter()
++            .flat_map(|candidate| candidate.results.iter().map(|result| result.id))
++            .collect();
++        assert_eq!(
++            discovery.batch(&mut graph, 64, Instant::now() + Duration::from_secs(2)),
++            2
++        );
++        for &id in &selected_ids[1..] {
++            graph.union(selected_ids[0], id);
++        }
++        graph.rebuild();
++        discovery.refresh(&graph);
++        assert_eq!(discovery.seen.len(), 1);
++        assert_eq!(discovery.registered_count(), 2);
++        assert_eq!(discovery.report.stop_reason, StopReason::TupleLimit);
++        assert_eq!(discovery.report.search_calls, 0);
++        assert_eq!(
++            discovery.batch(&mut graph, 64, Instant::now() + Duration::from_secs(2)),
++            0
++        );
++    }
++
++    #[test]
++    fn work_limits_reset_on_refresh_but_registered_tuple_limit_does_not() {
++        let mut graph = dots(3);
++        let limits = SearchLimits {
++            raw_matches: 1,
++            search_calls: 100,
++            attempts: 1,
++        };
++        let mut discovery = discover(&graph, vec![pair()], 1, limits, None);
++        assert_eq!(discovery.report.raw_matches, 1);
++        assert_eq!(
++            discovery.batch(&mut graph, 1, Instant::now() + Duration::from_secs(2)),
++            1
++        );
++        discovery.refresh(&graph);
++        assert_eq!(discovery.report.raw_matches, 0);
++        assert_eq!(discovery.report.search_calls, 0);
++        assert_eq!(discovery.report.stop_reason, StopReason::TupleLimit);
++        assert_eq!(discovery.registered_count(), 1);
++        assert!(discovery.pending.is_empty());
++    }
++}
+diff --git a/act_backend/generic/src/isel/mod.rs b/act_backend/generic/src/isel/mod.rs
+--- a/act_backend/generic/src/isel/mod.rs
++++ b/act_backend/generic/src/isel/mod.rs
+@@ -2,3 +2,4 @@
+ pub mod discovery;
+ pub mod initializer;
+ pub mod rewrites;
++pub mod bounded_search;
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -332,7 +332,16 @@
+     let joint_limit = env::var("ACT_JOINT_LIMIT").ok()
+         .map(|text| text.parse::<usize>().expect("Invalid ACT_JOINT_LIMIT"))
+         .unwrap_or(64);
+-    let mut discovery = isel::discovery::Discovery::new(&init_egraph, joint_limit);
++    let work_limit = |name: &str| env::var(name).ok()
++        .map(|text| text.parse::<usize>().unwrap_or_else(|_| panic!("Invalid {name}")))
++        .unwrap_or(4096);
++    let joint_work = isel::bounded_search::SearchLimits {
++        raw_matches: work_limit("ACT_JOINT_RAW_LIMIT"),
++        search_calls: work_limit("ACT_JOINT_SEARCH_LIMIT"),
++        attempts: work_limit("ACT_JOINT_ATTEMPT_LIMIT"),
++    };
++    let mut discovery = isel::discovery::Discovery::with_limits(
++        &init_egraph, joint_limit, joint_work, Some(start + TIME_LIMIT));
+ 
+     let mut limit: usize = SLOW_LIMIT_START;
+ 
+@@ -358,10 +367,17 @@
+                 // The preceding iteration may have added or merged matches.
+                 // Drain this bounded snapshot before allowing saturation.
+                 runner.egraph.rebuild();
+-                if !runner.iterations.is_empty() { discovery.refresh(&runner.egraph); }
++                if !runner.iterations.is_empty() { discovery.refresh_until(&runner.egraph, Some(start + TIME_LIMIT)); }
+                 while !discovery.exhausted() && start.elapsed() < TIME_LIMIT {
+                     discovery.batch(&mut runner.egraph, joint_limit, start + TIME_LIMIT);
+                 }
++                println!("ACT_DISCOVERY {}", serde_json::json!({
++                    "variant": "multipattern",
++                    "iteration": runner.iterations.len(),
++                    "tuple_limit": joint_limit,
++                    "registered_tuples": discovery.registered_count(),
++                    "search": discovery.report(),
++                }));
+                 Ok(())
+             })
+             .with_hook(move |runner| {

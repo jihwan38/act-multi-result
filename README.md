@@ -218,9 +218,25 @@ QKV=`baseline`, DoubleGEMM=`multi-result`이므로 실험에는 `--toolchain mul
 앞의 DoubleGEMM 직접 compiler·Oracle 명령도 선택한 `$ACT_BUILD_DIR`에서 그대로 사용할 수 있다.
 
 독립된 결과에 공유 변수 제약이 없으면 가능한 조합 수는 줄지 않는다.
-반환 후보 수에는 제한을 두지만, 형상에 맞는 후보가 부족하면 검색 결과를 더 많이 받아 다시 거른다.
-이때 임시 결과의 메모리는 반환 후보 한도로 제한되지 않는다. egg 검색 한 번을 중간 취소할 수도 없으므로,
-이 구성이 더 빠르거나 검색 시간이 엄격히 제한된다고 보장하지 않는다.
+후보 등록 수와 검색 작업량은 다음처럼 별도로 제한한다.
+
+| 환경 변수 | 기본값 | 범위 |
+| --- | --- | --- |
+| `ACT_JOINT_LIMIT` | 64 | 컴파일 중 누적 tuple 등록 수 |
+| `ACT_JOINT_RAW_LIMIT` | 4096 | refresh 한 번에서 받은 원시 substitution 수. 재검색한 앞부분도 포함 |
+| `ACT_JOINT_SEARCH_LIMIT` | 4096 | refresh 한 번의 egg 검색 호출 수. 결과가 없는 호출도 포함 |
+| `ACT_JOINT_ATTEMPT_LIMIT` | 4096 | refresh 한 번에서 검사하는 후보 수 |
+
+남은 등록 한도만큼 유효 후보가 준비되면 검색을 멈춘다. 후보는 ISA 선언 순서로 번갈아
+검색하고, 각 ISA의 시작 e-class는 ID 순서로 방문한다. 같은 그래프에 대한 선택 정책이며,
+전체 컴파일러나 서로 다르게 만들어진 그래프의 결과까지 동일하다는 보장은 아니다.
+`compile.log`의 `ACT_DISCOVERY` JSON은 원시 결과·재검색·거절·등록 수와 중단 이유를 기록한다.
+예산으로 중단한 검색을 모든 후보를 찾은 검색으로 취급하지 않는다.
+
+전체 컴파일 deadline도 검색 호출 사이에서 확인하지만, egg 검색 한 번을 중간 취소할 수는 없다.
+원시 결과 수와 호출 수의 제한은 엄격한 실행 시간 제한이 아니다. 공유 입력·3개 출력·여러 명령의
+실제 생성·검증 및 외부 process timeout을 포함한 비교 실험은
+[`experiments/multipattern/`](experiments/multipattern/PLAN.md)에 둔다.
 
 ## 6. 다른 HLO를 실행하기
 
