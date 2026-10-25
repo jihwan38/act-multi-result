@@ -1,0 +1,451 @@
+{
+  "comparison": "Frozen patch stacks checked against the three implementation commits. Fixtures are shared experiment inputs, not claimed to exist on main.",
+  "variants": {
+    "multi-result": {
+      "implementation_commit": "10f059ed9d29f79825fe9d15e9587e34abfe1bce",
+      "source_fingerprint": "4d238b5c6978870c54e73049b45bd0845ebd8df32dedacd17ee3316c57f5e9fa",
+      "source_plan": {
+        "toolchain": "multi-result",
+        "upstreams": {
+          "act": "8910efe9a35f1da65095bc35933646d9d6216b90",
+          "taidl": "d5504237791a9b1e28e2413fbb2216122f8ad25d",
+          "act-backend": "4084778e70022acac290b3cdb11eccf4b39fa372",
+          "act-oracle": "219afb6a9b1a9947bae6bffbdfbd8000233cf865"
+        },
+        "patches": [
+          {
+            "path": "patches/baseline/act-backend/0001-use-configurable-native-dependency-roots.patch",
+            "sha256": "683d53d9fd06e7a09785f17c2ce25c2acff1c8fddba6ce22e2f45c0bace6b9cf"
+          },
+          {
+            "path": "patches/baseline/act-backend/0002-honor-explicit-hlo-root.patch",
+            "sha256": "44ecc4638d67a64c430b3cf18f85c2770fec1a1ac98fba81b735b7e98492c7e0"
+          },
+          {
+            "path": "patches/baseline/act-backend/0003-enforce-declared-address-constraints.patch",
+            "sha256": "bafca7c4298ecb6bc4ec460f15bb94e131ec0e70664a225f69a194462ddb58e8"
+          },
+          {
+            "path": "patches/baseline/act-oracle/0001-preserve-broadcast-dimensions.patch",
+            "sha256": "7bbbd3cf66bd2067b36e5cce20af4d2addb656babf97fd6298b61f8315ded5b7"
+          },
+          {
+            "path": "patches/multi-result/taidl/0001-semantic-interface.patch",
+            "sha256": "b8aefbf75072996f875e93ea88f9980ed6488e3423c9566c76a4eee377b85af6"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0001-isa-rewrites.patch",
+            "sha256": "b91b0c5a3f01c9bb317de8786c39ac2f328ba3b99be3c6465832d4391c63a330"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0002-hlo-tuples.patch",
+            "sha256": "862cfe27e067318d27bdfc5d6ba6078ef3327b54f12e4789d6aae66c9294fa98"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0003-isa-candidates.patch",
+            "sha256": "a185e95df309e711177408353f4ef8e052efeee6f875ae4831bb325b14589d93"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0004-pii-model.patch",
+            "sha256": "0b5fc39bb77eb12923afe1cd3094d16501972533fcafd169b03a94afcbe21fff"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0005-pii-extraction.patch",
+            "sha256": "cbdf0f5809139c381dc18cdba9f20edfa4261843be5ad4b86d68117b224abbf0"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0006-pii-to-assembly.patch",
+            "sha256": "460ca11dcd06926c107d044e13629369bed404a297743c1d8ecd1ce78ae48747"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0007-candidate-evaluation.patch",
+            "sha256": "e0e14ffd3686e9dbf8d753388756dc26f587ac55133ae852a13b10de5dad9fd7"
+          },
+          {
+            "path": "patches/multi-result/act-oracle/0001-isa-codegen.patch",
+            "sha256": "fd3f48f2cf23087e4c00b154daf1b9e6d1ff13a94081ad68f9f3ed90946ba6e6"
+          },
+          {
+            "path": "patches/multi-result/act-oracle/0002-hlo-tuples.patch",
+            "sha256": "5261fc485e4d4de59b33fb86980e5ed07436f934894a39896f1a613ac113cf22"
+          }
+        ]
+      },
+      "frozen_builds": [
+        {
+          "fixture": "probe",
+          "key": "multi-result",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/probe/builds/multi-result",
+          "runtime_sha256": {
+            "build/goal-multipattern/probe/builds/multi-result/backends/MultiPatternProbe": "6ba9d4e63bf2aa6602f72242b033ea33040312ca5b49a6c64ac7774a1ab95843",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "69dbb81b9a908ff9934919ddbc1644b4de4011c7335ceaeeab08af4a5f6f3f21",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/oracle/api.py": "9fc6da0bca7cce987cef1abefb29573a85a78dce888c836ac9670ca7678be9f0",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": null
+        },
+        {
+          "fixture": "independent",
+          "key": "multi-result",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/independent/builds/multi-result",
+          "runtime_sha256": {
+            "build/goal-multipattern/independent/builds/multi-result/backends/IndependentPatternProbe": "e7238625c648bf262d04c0b9e2cca66864ffac13c8eb8fafcc91b42e12afc4a1",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "b6a9a1efc7fe3a00fe736be233e59c4ac27b0050dff1fb3d2807d25c54aac9f3",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/oracle/api.py": "5e70e5ae339f7f044e17967a7e7fdb6d9cfeefa592af1e39d02cffd771d769a9",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": null
+        },
+        {
+          "fixture": "micro",
+          "key": "shared/multi-result",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/probe/builds/multi-result",
+          "runtime_sha256": {
+            "build/goal-multipattern/probe/builds/multi-result/backends/MultiPatternProbe": "6ba9d4e63bf2aa6602f72242b033ea33040312ca5b49a6c64ac7774a1ab95843",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "69dbb81b9a908ff9934919ddbc1644b4de4011c7335ceaeeab08af4a5f6f3f21",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/oracle/api.py": "9fc6da0bca7cce987cef1abefb29573a85a78dce888c836ac9670ca7678be9f0",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/probe/builds/multi-result/targets/MultiPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": "1d3ac2e3d8ae0061d08a9937e3a6643eb04019f8d3689dac9be031f91549309a"
+        },
+        {
+          "fixture": "micro",
+          "key": "independent/multi-result",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/independent/builds/multi-result",
+          "runtime_sha256": {
+            "build/goal-multipattern/independent/builds/multi-result/backends/IndependentPatternProbe": "e7238625c648bf262d04c0b9e2cca66864ffac13c8eb8fafcc91b42e12afc4a1",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "b6a9a1efc7fe3a00fe736be233e59c4ac27b0050dff1fb3d2807d25c54aac9f3",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/oracle/api.py": "5e70e5ae339f7f044e17967a7e7fdb6d9cfeefa592af1e39d02cffd771d769a9",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/independent/builds/multi-result/targets/IndependentPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": "4057cac9700d791754d211d245e6eb3fa8e359c8a4f2a75aa0e03a64a8bd8505"
+        }
+      ]
+    },
+    "multipattern": {
+      "implementation_commit": "05692e4b806cd00f5c6252cda99e3652630b85e6",
+      "source_fingerprint": "794bd0c4449a618f41697957de767073716c0f0f16ecdb094f6b1776549ba2ad",
+      "source_plan": {
+        "toolchain": "multipattern",
+        "upstreams": {
+          "act": "8910efe9a35f1da65095bc35933646d9d6216b90",
+          "taidl": "d5504237791a9b1e28e2413fbb2216122f8ad25d",
+          "act-backend": "4084778e70022acac290b3cdb11eccf4b39fa372",
+          "act-oracle": "219afb6a9b1a9947bae6bffbdfbd8000233cf865"
+        },
+        "patches": [
+          {
+            "path": "patches/baseline/act-backend/0001-use-configurable-native-dependency-roots.patch",
+            "sha256": "683d53d9fd06e7a09785f17c2ce25c2acff1c8fddba6ce22e2f45c0bace6b9cf"
+          },
+          {
+            "path": "patches/baseline/act-backend/0002-honor-explicit-hlo-root.patch",
+            "sha256": "44ecc4638d67a64c430b3cf18f85c2770fec1a1ac98fba81b735b7e98492c7e0"
+          },
+          {
+            "path": "patches/baseline/act-backend/0003-enforce-declared-address-constraints.patch",
+            "sha256": "bafca7c4298ecb6bc4ec460f15bb94e131ec0e70664a225f69a194462ddb58e8"
+          },
+          {
+            "path": "patches/baseline/act-oracle/0001-preserve-broadcast-dimensions.patch",
+            "sha256": "7bbbd3cf66bd2067b36e5cce20af4d2addb656babf97fd6298b61f8315ded5b7"
+          },
+          {
+            "path": "patches/multi-result/taidl/0001-semantic-interface.patch",
+            "sha256": "b8aefbf75072996f875e93ea88f9980ed6488e3423c9566c76a4eee377b85af6"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0001-isa-rewrites.patch",
+            "sha256": "b91b0c5a3f01c9bb317de8786c39ac2f328ba3b99be3c6465832d4391c63a330"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0002-hlo-tuples.patch",
+            "sha256": "862cfe27e067318d27bdfc5d6ba6078ef3327b54f12e4789d6aae66c9294fa98"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0003-isa-candidates.patch",
+            "sha256": "a185e95df309e711177408353f4ef8e052efeee6f875ae4831bb325b14589d93"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0004-pii-model.patch",
+            "sha256": "0b5fc39bb77eb12923afe1cd3094d16501972533fcafd169b03a94afcbe21fff"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0005-pii-extraction.patch",
+            "sha256": "cbdf0f5809139c381dc18cdba9f20edfa4261843be5ad4b86d68117b224abbf0"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0006-pii-to-assembly.patch",
+            "sha256": "460ca11dcd06926c107d044e13629369bed404a297743c1d8ecd1ce78ae48747"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0007-candidate-evaluation.patch",
+            "sha256": "e0e14ffd3686e9dbf8d753388756dc26f587ac55133ae852a13b10de5dad9fd7"
+          },
+          {
+            "path": "patches/multi-result/act-oracle/0001-isa-codegen.patch",
+            "sha256": "fd3f48f2cf23087e4c00b154daf1b9e6d1ff13a94081ad68f9f3ed90946ba6e6"
+          },
+          {
+            "path": "patches/multi-result/act-oracle/0002-hlo-tuples.patch",
+            "sha256": "5261fc485e4d4de59b33fb86980e5ed07436f934894a39896f1a613ac113cf22"
+          },
+          {
+            "path": "patches/multipattern/act-backend/0001-direct-discovery.patch",
+            "sha256": "9ff83f442742b8b415bff44406a4391a32ead1ae31d52e0eb922ff904fb320ee"
+          },
+          {
+            "path": "patches/multipattern/act-backend/0002-bounded-discovery.patch",
+            "sha256": "621fbe3afa9350a9b9c713395362d84d661eee55c079a628c9658daec6720981"
+          }
+        ]
+      },
+      "frozen_builds": [
+        {
+          "fixture": "probe",
+          "key": "multipattern",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/probe/builds/multipattern",
+          "runtime_sha256": {
+            "build/goal-multipattern/probe/builds/multipattern/backends/MultiPatternProbe": "68fe285c26385977c3dfcc7a46798cdadd7917131d7158b543484c6ddd4fd693",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "69dbb81b9a908ff9934919ddbc1644b4de4011c7335ceaeeab08af4a5f6f3f21",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/oracle/api.py": "9fc6da0bca7cce987cef1abefb29573a85a78dce888c836ac9670ca7678be9f0",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": null
+        },
+        {
+          "fixture": "independent",
+          "key": "multipattern",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/independent/builds/multipattern",
+          "runtime_sha256": {
+            "build/goal-multipattern/independent/builds/multipattern/backends/IndependentPatternProbe": "d5028be97f116a16a547d1b4e6b23c4aa923e81babf14f7c326f55521d11cd99",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "b6a9a1efc7fe3a00fe736be233e59c4ac27b0050dff1fb3d2807d25c54aac9f3",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/oracle/api.py": "5e70e5ae339f7f044e17967a7e7fdb6d9cfeefa592af1e39d02cffd771d769a9",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": null
+        },
+        {
+          "fixture": "micro",
+          "key": "shared/multipattern",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/probe/builds/multipattern",
+          "runtime_sha256": {
+            "build/goal-multipattern/probe/builds/multipattern/backends/MultiPatternProbe": "68fe285c26385977c3dfcc7a46798cdadd7917131d7158b543484c6ddd4fd693",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "69dbb81b9a908ff9934919ddbc1644b4de4011c7335ceaeeab08af4a5f6f3f21",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/oracle/api.py": "9fc6da0bca7cce987cef1abefb29573a85a78dce888c836ac9670ca7678be9f0",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/probe/builds/multipattern/targets/MultiPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": "c21eaa512ec373114f226a1d05776b5c4025d8557b481c3aab308b264f9c5f64"
+        },
+        {
+          "fixture": "micro",
+          "key": "independent/multipattern",
+          "build_time_head": "474b40acb6282f4daa28cc79aab77ac001226ed6",
+          "base": "build/goal-multipattern/independent/builds/multipattern",
+          "runtime_sha256": {
+            "build/goal-multipattern/independent/builds/multipattern/backends/IndependentPatternProbe": "d5028be97f116a16a547d1b4e6b23c4aa923e81babf14f7c326f55521d11cd99",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "b6a9a1efc7fe3a00fe736be233e59c4ac27b0050dff1fb3d2807d25c54aac9f3",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/oracle/api.py": "5e70e5ae339f7f044e17967a7e7fdb6d9cfeefa592af1e39d02cffd771d769a9",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/independent/builds/multipattern/targets/IndependentPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": "3dd15ceff100e84c6bae6883bbba0fa0a28844e170e9d672847309cacc9c9afb"
+        }
+      ]
+    },
+    "multipattern-rewrite": {
+      "implementation_commit": "3b85d5dad68867fb6768d355ecba85876fcd5685",
+      "source_fingerprint": "a567098ddbf62fd1aa59fe6c289cddf6e1d5c2c0a35513bd9d48cd2bbf5c9c91",
+      "source_plan": {
+        "toolchain": "multipattern-rewrite",
+        "upstreams": {
+          "act": "8910efe9a35f1da65095bc35933646d9d6216b90",
+          "taidl": "d5504237791a9b1e28e2413fbb2216122f8ad25d",
+          "act-backend": "4084778e70022acac290b3cdb11eccf4b39fa372",
+          "act-oracle": "219afb6a9b1a9947bae6bffbdfbd8000233cf865"
+        },
+        "patches": [
+          {
+            "path": "patches/baseline/act-backend/0001-use-configurable-native-dependency-roots.patch",
+            "sha256": "683d53d9fd06e7a09785f17c2ce25c2acff1c8fddba6ce22e2f45c0bace6b9cf"
+          },
+          {
+            "path": "patches/baseline/act-backend/0002-honor-explicit-hlo-root.patch",
+            "sha256": "44ecc4638d67a64c430b3cf18f85c2770fec1a1ac98fba81b735b7e98492c7e0"
+          },
+          {
+            "path": "patches/baseline/act-backend/0003-enforce-declared-address-constraints.patch",
+            "sha256": "bafca7c4298ecb6bc4ec460f15bb94e131ec0e70664a225f69a194462ddb58e8"
+          },
+          {
+            "path": "patches/baseline/act-oracle/0001-preserve-broadcast-dimensions.patch",
+            "sha256": "7bbbd3cf66bd2067b36e5cce20af4d2addb656babf97fd6298b61f8315ded5b7"
+          },
+          {
+            "path": "patches/multi-result/taidl/0001-semantic-interface.patch",
+            "sha256": "b8aefbf75072996f875e93ea88f9980ed6488e3423c9566c76a4eee377b85af6"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0001-isa-rewrites.patch",
+            "sha256": "b91b0c5a3f01c9bb317de8786c39ac2f328ba3b99be3c6465832d4391c63a330"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0002-hlo-tuples.patch",
+            "sha256": "862cfe27e067318d27bdfc5d6ba6078ef3327b54f12e4789d6aae66c9294fa98"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0003-isa-candidates.patch",
+            "sha256": "a185e95df309e711177408353f4ef8e052efeee6f875ae4831bb325b14589d93"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0004-pii-model.patch",
+            "sha256": "0b5fc39bb77eb12923afe1cd3094d16501972533fcafd169b03a94afcbe21fff"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0005-pii-extraction.patch",
+            "sha256": "cbdf0f5809139c381dc18cdba9f20edfa4261843be5ad4b86d68117b224abbf0"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0006-pii-to-assembly.patch",
+            "sha256": "460ca11dcd06926c107d044e13629369bed404a297743c1d8ecd1ce78ae48747"
+          },
+          {
+            "path": "patches/multi-result/act-backend/0007-candidate-evaluation.patch",
+            "sha256": "e0e14ffd3686e9dbf8d753388756dc26f587ac55133ae852a13b10de5dad9fd7"
+          },
+          {
+            "path": "patches/multi-result/act-oracle/0001-isa-codegen.patch",
+            "sha256": "fd3f48f2cf23087e4c00b154daf1b9e6d1ff13a94081ad68f9f3ed90946ba6e6"
+          },
+          {
+            "path": "patches/multi-result/act-oracle/0002-hlo-tuples.patch",
+            "sha256": "5261fc485e4d4de59b33fb86980e5ed07436f934894a39896f1a613ac113cf22"
+          },
+          {
+            "path": "patches/multipattern/act-backend/0001-direct-discovery.patch",
+            "sha256": "9ff83f442742b8b415bff44406a4391a32ead1ae31d52e0eb922ff904fb320ee"
+          },
+          {
+            "path": "patches/multipattern/act-backend/0002-bounded-discovery.patch",
+            "sha256": "621fbe3afa9350a9b9c713395362d84d661eee55c079a628c9658daec6720981"
+          },
+          {
+            "path": "patches/multipattern-rewrite/act-backend/0001-generated-rewrites.patch",
+            "sha256": "d9e33b40924ab57db6452dbe65bf73f6d43ecf353e074227d8ad593c9d16ca8e"
+          }
+        ]
+      },
+      "frozen_builds": [
+        {
+          "fixture": "probe",
+          "key": "multipattern-rewrite",
+          "build_time_head": "05692e4b806cd00f5c6252cda99e3652630b85e6",
+          "base": "build/goal-multipattern/probe/builds/multipattern-rewrite",
+          "runtime_sha256": {
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/backends/MultiPatternProbe": "d021a70b3e4f88974722748c985ca098c136d4e9e4650b580ffd656b0bc26fb9",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "69dbb81b9a908ff9934919ddbc1644b4de4011c7335ceaeeab08af4a5f6f3f21",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/oracle/api.py": "9fc6da0bca7cce987cef1abefb29573a85a78dce888c836ac9670ca7678be9f0",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": null
+        },
+        {
+          "fixture": "independent",
+          "key": "multipattern-rewrite",
+          "build_time_head": "05692e4b806cd00f5c6252cda99e3652630b85e6",
+          "base": "build/goal-multipattern/independent/builds/multipattern-rewrite",
+          "runtime_sha256": {
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/backends/IndependentPatternProbe": "4d276375367556e4ab85401b9aa3ba766006f5e77a482bc5eff3b33753964ae8",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "b6a9a1efc7fe3a00fe736be233e59c4ac27b0050dff1fb3d2807d25c54aac9f3",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/oracle/api.py": "5e70e5ae339f7f044e17967a7e7fdb6d9cfeefa592af1e39d02cffd771d769a9",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": null
+        },
+        {
+          "fixture": "micro",
+          "key": "shared/multipattern-rewrite",
+          "build_time_head": "05692e4b806cd00f5c6252cda99e3652630b85e6",
+          "base": "build/goal-multipattern/probe/builds/multipattern-rewrite",
+          "runtime_sha256": {
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/backends/MultiPatternProbe": "d021a70b3e4f88974722748c985ca098c136d4e9e4650b580ffd656b0bc26fb9",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "69dbb81b9a908ff9934919ddbc1644b4de4011c7335ceaeeab08af4a5f6f3f21",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/oracle/api.py": "9fc6da0bca7cce987cef1abefb29573a85a78dce888c836ac9670ca7678be9f0",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/probe/builds/multipattern-rewrite/targets/MultiPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": "20ae448a6ad0f2105e102a81faeed21cdd68dd77160dcfdeb0333431c631179b"
+        },
+        {
+          "fixture": "micro",
+          "key": "independent/multipattern-rewrite",
+          "build_time_head": "05692e4b806cd00f5c6252cda99e3652630b85e6",
+          "base": "build/goal-multipattern/independent/builds/multipattern-rewrite",
+          "runtime_sha256": {
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/backends/IndependentPatternProbe": "4d276375367556e4ab85401b9aa3ba766006f5e77a482bc5eff3b33753964ae8",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/backend/python/cost/model.py": "23725e2741a0dfd8ecd191ff263a951c033fd2ae0108ab5adcc97eaeb58dd943",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2ir_rewrites.txt": "0e4ef780e998f6a0aa7de0579c2730ceb8958c52db21786ddd73e8b36993393b",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/backend/src/isel/rewrites/ir2isa_rewrites.txt": "b6a9a1efc7fe3a00fe736be233e59c4ac27b0050dff1fb3d2807d25c54aac9f3",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/oracle/api.py": "5e70e5ae339f7f044e17967a7e7fdb6d9cfeefa592af1e39d02cffd771d769a9",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/oracle/decorator.py": "7174be2b0dd17f5cf8bfbfc03684bd6aa971a3ca558af89e8689d9990fb181f0",
+            "build/goal-multipattern/independent/builds/multipattern-rewrite/targets/IndependentPatternProbe/oracle/build/print_handler_ext.cpython-310-x86_64-linux-gnu.so": "8c2c5fb30ddb719b6567cd9888e1c01861c0491ab30508a7936caa43ee228dd9"
+          },
+          "micro_binary_sha256": "6c8e26d6d2091651f6e0252eb150f2c6ee5793739bb8dfbb19bf9b34676518af"
+        }
+      ]
+    }
+  },
+  "manifests": {
+    "probe": {
+      "path": "build/goal-multipattern/probe/builds.json",
+      "sha256": "6f0703a44c2a2cc897a5b62d6a339c16f42b5b3b2390b9063faa9cc02ee965d1"
+    },
+    "independent": {
+      "path": "build/goal-multipattern/independent/builds.json",
+      "sha256": "8b4e3f151d61b0b474e5aa8af70a106b319f6cd97e730a150e0b7be4af1719a7"
+    },
+    "micro": {
+      "path": "build/goal-multipattern/micro/builds.json",
+      "sha256": "63e032b454d61810d01150b03e9d1f0e872c702c26d3f19f5a6d16df5222b2b5"
+    }
+  },
+  "note": "Builds were frozen and tested before their implementation commits; build_time_head is the then-current parent. Every applicable patch digest was independently checked against implementation_commit. Runtime and full source file digests are in builds.json."
+}

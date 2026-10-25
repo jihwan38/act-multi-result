@@ -268,6 +268,8 @@ ISA별 한도와 적용 수, 누적 검색량, 중단 이유를 기록한다. �
 `runner_stop`은 전체 rewrite 실행의 종료 이유다. 이 구성도 실행 중인 egg 검색 호출을
 중간 취소하지는 못한다. 세 구성의 재현 명령과 비교 조건은
 [`experiments/multipattern/README.md`](experiments/multipattern/README.md)에 있다.
+완료한 세 브랜치 비교와 원본 측정 자료는
+[`experiments/multipattern/REPORT.md`](experiments/multipattern/REPORT.md)에 정리했다.
 
 ## 6. 다른 HLO를 실행하기
 

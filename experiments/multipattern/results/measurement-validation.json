@@ -1,0 +1,30 @@
+{
+  "measurements": [
+    {
+      "path": "/home/jihwan38/act-multi-result/build/goal-multipattern/probe/measurements/final-default/samples.json",
+      "sha256": "614fdcb88550d0919d66b8ce885a60b84e49ced07a78270ee96505e51e94a616",
+      "samples": 252,
+      "measured": 210,
+      "passed": 252
+    },
+    {
+      "path": "/home/jihwan38/act-multi-result/build/goal-multipattern/micro/measurements/final-default/samples.json",
+      "sha256": "ec0dd0ee9acf7d285906689e56d813521059346ac0a90601411fbf08015b9f4c",
+      "samples": 216,
+      "measured": 180,
+      "passed": 216
+    },
+    {
+      "path": "/home/jihwan38/act-multi-result/build/goal-multipattern/probe/measurements/final-tight/samples.json",
+      "sha256": "9d77e39686e778fe7e0a0effc717f7f68a7c20eceb140515d4ae47ba44cfe6ec",
+      "samples": 54,
+      "measured": 45,
+      "passed": 54
+    }
+  ],
+  "checked": {
+    "search_reports": 1654,
+    "direct_reports": 334
+  },
+  "violations": []
+}

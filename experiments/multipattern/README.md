@@ -86,6 +86,16 @@ python -B experiments/multipattern/run.py measure \
   --label measured --repeats 5 --warmups 1
 ```
 
+The small-budget comparison uses the same three variants and three inputs:
+
+```bash
+python -B experiments/multipattern/run.py measure \
+  --output build/experiments/multipattern/run1 \
+  --label measured-tight --repeats 5 --warmups 1 \
+  --cases shared_pair_concat shared_triple_concat shared_reshape \
+  --joint-limit 2 --raw-limit 16 --search-limit 16 --attempt-limit 16
+```
+
 The runner rotates toolchain order each repetition and preserves warmups and
 all failed samples. At least five measured repetitions and one warmup are
 required. Compilation has a process-group timeout (`--timeout`, default 35 s);
@@ -173,3 +183,27 @@ Keep each experiment's frozen build directories in place: the compiled backend
 references generated rewrite/cost files at those locations. Reuse checks verify
 their hashes before running. Moving only an executable does not preserve its
 runtime environment.
+
+## Recorded comparison
+
+[REPORT.md](REPORT.md) describes the three implementation commits, validation,
+measurement conditions, results and limitations. Its versioned `results/`
+directory contains per-run CSVs, aggregate JSON, source provenance and a gzip
+archive of all recorded measurement/check samples, including warmups and failures.
+The archive is structured evidence; full successful-run compiler logs and generated
+assemblies remain in the workspace under `build/goal-multipattern/`.
+
+After all runs and archived regression summaries are present, regenerate these
+artifacts without rerunning a compiler:
+
+```bash
+python -B experiments/multipattern/export_results.py \
+  --root build/goal-multipattern --output experiments/multipattern/results
+python -B experiments/multipattern/plot_results.py
+```
+
+The exporter requires complete `probe/measurements/final-default`,
+`probe/measurements/final-tight`, and `micro/measurements/final-default` matrices,
+plus the frozen build manifests and regression summaries described in the report.
+It refuses unfinished or missing matrices. The plot script requires matplotlib;
+the experiment runners and exporter use the Python standard library.
