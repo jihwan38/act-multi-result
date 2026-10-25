@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 
 from verify import arguments, compare_outputs, example_defaults, input_sets
+from _internal.common import TOOLCHAINS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,7 +38,9 @@ class VerificationTests(unittest.TestCase):
                 self.assertEqual(bool(np.any(value)), label != "zero")
 
     def test_both_multi_result_examples_infer_an_allocation_audit(self):
-        for mode in ("multi-result", "multipattern"):
+        for mode, groups in TOOLCHAINS.items():
+            if "multi-result" not in groups:
+                continue
             for case, filename, target in (("qkv", "QKV.py", "QKV"),
                                            ("double_gemm", "QKVDoubleGemm.py", "QKVDoubleGemm")):
                 with self.subTest(toolchain=mode, case=case):

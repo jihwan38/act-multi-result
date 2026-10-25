@@ -149,8 +149,9 @@ source scripts/env.sh multi-result
 | `baseline` | 고정 upstream + `patches/baseline/` | `build/baseline/` |
 | `multi-result` | 같은 upstream + `patches/baseline/` → `patches/multi-result/` | `build/multi-result/` |
 | `multipattern` | `multi-result` 구성 + `patches/multipattern/` | `build/multipattern/` |
+| `multipattern-rewrite` | `multipattern` 구성 + `patches/multipattern-rewrite/` | `build/multipattern-rewrite/` |
 
-`patches/baseline/`은 세 구성 모두에 적용하는 기본 수정이다. native 의존성 경로,
+`patches/baseline/`은 네 구성 모두에 적용하는 기본 수정이다. native 의존성 경로,
 명시적 HLO ROOT 처리, 선언한 주소 제약 적용, Oracle broadcast를 수정한다.
 수정하지 않은 upstream은 `third_party/`에 보관한다.
 
@@ -191,7 +192,7 @@ python scripts/verify.py \
   --assembly "$ACT_BUILD_DIR/runs/double_gemm/two_gemm_concat/assembly.py"
 ```
 
-DoubleGEMM도 같은 `verify.py`를 사용한다. `multi-result`·`multipattern` 구성의 QKV·DoubleGEMM 기본 run 경로에서는
+DoubleGEMM도 같은 `verify.py`를 사용한다. 세 다중 출력 구성의 QKV·DoubleGEMM 기본 run 경로에서는
 compiler가 쓴 `assembly.py.allocation.json`과 선택된 PII를 ISA 선언에 대조해
 결과 port·주소 범위·수명 충돌을 검사한다. 일반 검증은 특정 명령의 호출 횟수를 요구하지 않는다.
 개별 GEMM으로 구현된 assembly도 계산과 주소가 올바르면 통과한다.
@@ -238,6 +239,36 @@ QKV=`baseline`, DoubleGEMM=`multi-result`이므로 실험에는 `--toolchain mul
 실제 생성·검증 및 외부 process timeout을 포함한 비교 실험은
 [`experiments/multipattern/`](experiments/multipattern/PLAN.md)에 둔다.
 
+### 실험 구성: 생성된 rewrite에 공동 검색과 적용 통합
+
+`multipattern-rewrite`에서는 다중 출력 ISA의 생성된 rewrite가 공동 검색을 직접 수행한다.
+`MultiPattern`으로 출력과 중간 연산의 바인딩을 구하고, 생성기가 만든 형상·메타데이터·입력
+조건을 검사한다. Applier는 적용 시점의 e-graph에서 조건을 다시 확인한 뒤 ISA producer와
+순서 있는 tuple/GTE를 추가한다. tuple은 이제 성공한 명령의 출력 연결이며, 검색 후보를
+미리 등록하기 위한 표현으로 쓰지 않는다. 출력 한 개를 명령의 전체 tuple과 합치지 않는다.
+
+파이프라인의 `Discovery` hook은 제거한다. 단일 출력 rewrite와 추출·PII·할당은 기존 경로를
+사용한다. 성공한 명령에 tuple을 남기는 이유는 추출기가 그 tuple로 각 출력 port를 찾기 때문이다.
+
+```bash
+./scripts/run.sh double_gemm --toolchain multipattern-rewrite
+./scripts/test.sh --toolchain multipattern-rewrite
+```
+
+위 네 `ACT_JOINT_*` 변수의 기본 숫자는 같지만 범위가 다르다. 이 구성에서
+`ACT_JOINT_LIMIT`은 **성공한 다중 출력 rewrite 적용 수**, 나머지 세 한도는 **컴파일 전체의
+누적 검색 작업량**이다. 모든 한도를 다중 출력 ISA에 균등 배분하고, 정수 나머지는 ISA 선언
+순서로 배분한다. 남은 몫을 다른 ISA에 넘기지 않으므로 앞 명령의 독점을 막는 대신,
+어떤 ISA만 일치하는 입력에서는 전체 한도를 다 쓰지 못할 수 있다. 시작 e-class는 ID 순서로
+방문하며, 한 ISA 안에서는 시작점들을 번갈아 검색한다.
+
+다중 출력 예산이 끝나도 단일 출력·IR rewrite는 계속 실행한다. `ACT_DIRECT_REWRITE` JSON은
+ISA별 한도와 적용 수, 누적 검색량, 중단 이유를 기록한다. 마지막 레코드가 누적 합계이므로
+반복별 레코드를 더하면 안 된다. `complete`는 마지막 검색 스냅샷에 관한 값이고,
+`runner_stop`은 전체 rewrite 실행의 종료 이유다. 이 구성도 실행 중인 egg 검색 호출을
+중간 취소하지는 못한다. 세 구성의 재현 명령과 비교 조건은
+[`experiments/multipattern/README.md`](experiments/multipattern/README.md)에 있다.
+
 ## 6. 다른 HLO를 실행하기
 
 ISA가 바뀌지 않았다면 이미 만든 compiler에 다른 `--input`을 넘기면 된다.
@@ -279,9 +310,10 @@ cases/
   qkv/                 QKV.py, workloads/attention.hlo
   double_gemm/         QKVDoubleGemm.py, workloads/two_gemm_concat.hlo
 patches/
-  baseline/            기본 수정 패치 + series; 세 구성 모두에 적용
+  baseline/            기본 수정 패치 + series; 네 구성 모두에 적용
   multi-result/        다중 출력 패치 + series
   multipattern/        실제 e-graph 공동 검색 실험 패치 + series
+  multipattern-rewrite/ 생성된 rewrite의 공동 검색·적용 패치 + series
 third_party/           고정 upstream submodule 4개
 scripts/
   setup.sh             Conda 환경·ACT 패키지·OR-Tools 설치
@@ -419,6 +451,8 @@ Compiler와 Oracle만 만들려면 5절처럼 `source scripts/env.sh multi-resul
 `--toolchain multipattern`은 `baseline` QKV를 유지하면서 나머지 두 실행과 생성기·의존성·Rust
 검사를 `multipattern` 구성으로 수행한다. `--unit-only`를 함께 주면 해당 구성의 Python 테스트만 실행한다.
 실험 구성의 결과는 `build/checks/tests/multipattern/summary.json`에 별도로 남는다.
+`--toolchain multipattern-rewrite`도 같은 검사를 수행하고, 직접 검색·적용의 Rust 회귀 테스트를
+추가 실행한다. 결과는 `build/checks/tests/multipattern-rewrite/summary.json`에 남는다.
 
 `tests/test_*.py`는 명세 해석·생성기·공개 ISA·metadata를 검사한다. 서로 다른 연산·타입·크기의
 출력을 갖는 작은 ISA는 필요한 테스트 안에서 선언해 생성기로 확인한다. `tests/check_*.py`는

@@ -10,7 +10,7 @@ checks, and cost model are used for each selected toolchain.
 | `shared_triple` | `add(x, a)`, `multiply(x, b)`, `dot(x, c)` |
 | `reshape_pair` | `reshape(x, [2,16])`, `reshape(x, [1,32])`, with `x:[4,8]` |
 
-Arithmetic tensors have shape `bf16[8,8]`. Each operation also has a scalar
+Arithmetic tensors have shape `bf16[8,8]`. Each operation also has a single-result
 instruction alternative. Loads and stores use the tutorial's byte-to-BF16
 conversion convention with narrower rows. The three joint rules coexist, and
 `mixed_pair_triple` requires both arithmetic joint instructions in its selected
@@ -28,12 +28,12 @@ directory for a changed fixture or changed source plan:
 conda activate act
 python -B experiments/multipattern/run.py build \
   --output build/experiments/multipattern/run1 \
-  --toolchains multi-result multipattern
+  --toolchains multi-result multipattern multipattern-rewrite
 
 python -B experiments/multipattern/run.py check \
   --output build/experiments/multipattern/run1 \
   --label correctness \
-  --toolchains multi-result multipattern
+  --toolchains multi-result multipattern multipattern-rewrite
 ```
 
 The build phase copies the prepared sources and applicable patches before
@@ -67,6 +67,15 @@ The standard limits are `--joint-limit 64`, `--raw-limit 4096`,
 `ACT_JOINT_ATTEMPT_LIMIT`. The unmodified `multi-result` reference retains its
 own cap-derived attempt policy and does not implement the three new controls.
 
+The lifetime cap also has different meanings. In `multi-result` and discovery
+configurations it limits registered tuples; an explicit workload tuple can
+still match an ordinary joint ISA rule when the discovery cap is zero. Direct
+rules count successful multi-result applications, including matches of explicit
+tuples. A zero cap therefore does not disable the same mechanism in every
+variant. Use the concat cases when examining discovery fallback, and compare
+the recorded work and candidate counts rather than treating equal numeric caps
+as equal work. The runner records `joint_limit_scope` for each build.
+
 ## Compiler measurements
 
 Run measurements serially after other builds and tests have finished:
@@ -99,6 +108,15 @@ Metrics have different meanings:
   supports it. `raw_matches` includes returned prefix replays;
   `replayed_matches` is recorded separately. These are work counts, not counts
   of distinct semantic matches. The reference has no such report.
+- `direct_rewrite_reports`: each `ACT_DIRECT_REWRITE` record from direct
+  generated rules. Its work/application counters are cumulative, so
+  `direct_work_totals` uses the final record. They must not be summed across
+  hooks. `complete` describes the last searched snapshots; `runner_stop`
+  separately records how the compiler's rewrite runner stopped. `runner_stop`
+  can be null when the existing pipeline publishes an assembly and calls
+  `process::exit` inside a later hook, before `Runner::run` returns. The earlier
+  reporting hook still records cumulative direct-search/application counters;
+  a null stop reason must not be interpreted as saturation.
 
 `samples.json` retains individual runs; `summary.json` contains counts and
 median/min/max metrics. Inspect correctness and selection rates before comparing
@@ -115,13 +133,13 @@ experiment directory:
 ```bash
 python -B experiments/multipattern/run.py build \
   --output build/experiments/multipattern/independent1 \
-  --fixture independent --toolchains multi-result multipattern
+  --fixture independent --toolchains multi-result multipattern multipattern-rewrite
 
 python -B experiments/multipattern/microbench.py build \
   --output build/experiments/multipattern/micro1 \
   --shared-build build/experiments/multipattern/run1 \
   --independent-build build/experiments/multipattern/independent1 \
-  --toolchains multi-result multipattern
+  --toolchains multi-result multipattern multipattern-rewrite
 
 python -B experiments/multipattern/microbench.py check \
   --output build/experiments/multipattern/micro1 --label correctness
@@ -144,6 +162,11 @@ fixture has `N²` legal pairs and `N³` legal triples; the shared fixture has on
 registered tuples. Internal timings exclude graph construction; external wall
 and RSS include graph construction and runtime overhead. Search report
 completeness describes that bounded snapshot, not global compiler saturation.
+The direct configuration divides each work/application limit into equal rule
+shares, with integer remainder assigned in declaration order and unused shares
+left unborrowed. This policy can return fewer total candidates when one rule
+has no matches; the reported per-rule shares and candidate counts are part of
+the comparison.
 
 All generated files and results belong under ignored `build/` directories.
 Keep each experiment's frozen build directories in place: the compiled backend

@@ -1,0 +1,1168 @@
+diff --git a/act_backend/generic/src/isel/rewrites/applier.rs b/act_backend/generic/src/isel/rewrites/applier.rs
+--- a/act_backend/generic/src/isel/rewrites/applier.rs
++++ b/act_backend/generic/src/isel/rewrites/applier.rs
+@@ -6,7 +6,10 @@
+ 
+ use crate::PROCESSED;
+ 
+-pub fn get_applier(rule: &str) -> Rewrite<TensorOp, TensorInfo> {
++pub fn get_applier(
++    rule: &str,
++    control: super::multi::DirectControl,
++) -> Rewrite<TensorOp, TensorInfo> {
+     let fields: Vec<&str> = rule.split(':').collect();
+     let name = fields[0];
+     let eqn: Vec<&str> = fields[1].split("=>").collect();
+@@ -54,6 +57,15 @@
+         "9" => set_shapes_9,
+         _ => panic!("No set_shapes function for rule {}!", name),
+     };
++    if matches!(&lhs.ast[lhs.ast.root()], ENodeOrVar::ENode(TensorOp::OpTuple(_))) {
++        let types = multi_result_typed_patterns().into_iter()
++            .find(|(instruction, _)| instruction.replace('_', "-") == name)
++            .expect("generated multi-result type contract").1.into_iter()
++            .map(|(_, dtype, shape)| (dtype, shape)).collect();
++        return super::multi::rewrite(name, lhs, rhs, types, super::multi::Functions {
++            precondition: precond_fn, metadata: metadata_fn, set_shapes: set_shapes_fn,
++        }, control);
++    }
+     rewrite!(name; { lhs.clone() } => {
+             ApplyRewrite { lhs, rhs, precond_fn, metadata_fn, set_shapes_fn, }
+     })
+@@ -139,7 +151,7 @@
+ 
+ /// Creates the enodes for the RHS of a rewrite.
+ /// Returns the Id of the RHS root.
+-fn apply_pat(
++pub(super) fn apply_pat(
+     egraph: &mut EGraph<TensorOp, TensorInfo>,
+     rhs_pat: &[ENodeOrVar<TensorOp>],
+     rhs_eclasses: &mut [Id],
+diff --git a/act_backend/generic/src/isel/rewrites/lib.rs b/act_backend/generic/src/isel/rewrites/lib.rs
+--- a/act_backend/generic/src/isel/rewrites/lib.rs
++++ b/act_backend/generic/src/isel/rewrites/lib.rs
+@@ -5,8 +5,13 @@
+ 
+ use crate::ir::egraph::{TensorInfo, TensorOp};
+ use crate::isel::rewrites::applier::get_applier;
++use super::multi::DirectControl;
+ 
+ pub fn get_rewrites() -> Vec<Rewrite<TensorOp, TensorInfo>> {
++    get_rewrites_with_control(DirectControl::from_env(None))
++}
++
++pub fn get_rewrites_with_control(control: DirectControl) -> Vec<Rewrite<TensorOp, TensorInfo>> {
+     let this_file_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file!());
+     let pwd = this_file_path
+         .parent()
+@@ -22,7 +27,7 @@
+ 
+     let mut rewrites: Vec<Rewrite<TensorOp, TensorInfo>> = vec![];
+     for rewrite_str in [ir2ir, ir2isa].concat().iter() {
+-        rewrites.push(get_applier(rewrite_str));
++        rewrites.push(get_applier(rewrite_str, control.clone()));
+     }
+     rewrites.push(super::tuple::projection_rule());
+     rewrites
+diff --git a/act_backend/generic/src/isel/rewrites/mod.rs b/act_backend/generic/src/isel/rewrites/mod.rs
+--- a/act_backend/generic/src/isel/rewrites/mod.rs
++++ b/act_backend/generic/src/isel/rewrites/mod.rs
+@@ -5,5 +5,6 @@
+ pub use ir2isa_rewrites::multi_result_typed_patterns;
+ mod lib;
+ mod tuple;
++pub mod multi;
+ 
+-pub use lib::get_rewrites;
++pub use lib::{get_rewrites, get_rewrites_with_control};
+diff --git a/act_backend/generic/src/isel/rewrites/multi.rs b/act_backend/generic/src/isel/rewrites/multi.rs
+new file mode 100644
+--- /dev/null
++++ b/act_backend/generic/src/isel/rewrites/multi.rs
+@@ -0,0 +1,997 @@
++//! Generated multi-result rules: joint search, checked application, ordered ports.
++//!
++//! Matching never inserts speculative tuples. A successful application retains
++//! an OpTuple beside the ISA producer because extraction needs its result IDs.
++use std::borrow::Cow;
++use std::collections::{BTreeMap, HashSet, VecDeque};
++use std::sync::{Arc, Mutex};
++use std::time::Instant;
++
++use egg::{
++    Applier, BackoffScheduler, EGraph, ENodeOrVar, Id, Language, MultiPattern, Pattern, PatternAst,
++    Rewrite, RewriteScheduler, SearchMatches, Searcher, Subst, Symbol, Var,
++};
++use serde::Serialize;
++
++use crate::ir::dtype::Dtype;
++use crate::ir::egraph::{tuple_elements, TensorInfo, TensorOp};
++use crate::isel::bounded_search::{
++    MatchCursor, SearchBudget, SearchLimits, SearchReport, SearchStep, StopReason,
++};
++
++type Graph = EGraph<TensorOp, TensorInfo>;
++type ResultType = (Dtype, Vec<Option<i32>>);
++
++#[derive(Clone, Copy, Debug)]
++pub(super) struct Functions {
++    pub precondition: fn(&Graph, &Vec<Id>) -> bool,
++    pub metadata: fn(&Graph, &Vec<Id>, &Vec<Option<TensorOp>>) -> Vec<Option<String>>,
++    pub set_shapes: fn(&mut Graph, &Vec<Id>, &Vec<Id>),
++}
++
++#[derive(Clone)]
++struct MatchPlan {
++    roots: Vec<Var>,
++    postorder: Vec<Var>,
++    variables: Vec<Var>,
++    clauses: Vec<Vec<(Var, PatternAst<TensorOp>)>>,
++    first: usize,
++    query: Option<MultiPattern<TensorOp>>,
++}
++
++fn input_var(var: Var) -> Var {
++    var.to_string()
++        .split("__use")
++        .next()
++        .unwrap()
++        .parse()
++        .unwrap()
++}
++
++impl MatchPlan {
++    fn new(lhs: &Pattern<TensorOp>) -> Self {
++        let ENodeOrVar::ENode(TensorOp::OpTuple(children)) = &lhs.ast[lhs.ast.root()] else {
++            panic!("multi-result rule requires an ordered tuple semantic root");
++        };
++        assert!(children.len() >= 2);
++        let roots: Vec<Var> = (0..children.len())
++            .map(|i| format!("?__act_result_{i}").parse().unwrap())
++            .collect();
++        let mut serial = 0;
++        let mut postorder = Vec::new();
++        let mut clauses = Vec::new();
++        // Retain expanded semantic occurrence order, even though PatternAst is
++        // a DAG. Generated preconditions index this exact tree postorder.
++        fn append(
++            ast: &PatternAst<TensorOp>,
++            id: Id,
++            binder: Var,
++            serial: &mut usize,
++            clauses: &mut Vec<(Var, PatternAst<TensorOp>)>,
++            postorder: &mut Vec<Var>,
++        ) {
++            match &ast[id] {
++                ENodeOrVar::Var(var) => {
++                    let mut alias = PatternAst::default();
++                    alias.add(ENodeOrVar::Var(input_var(*var)));
++                    clauses.push((binder, alias));
++                }
++                ENodeOrVar::ENode(node) => {
++                    let mut ast_part = PatternAst::default();
++                    let mut children = Vec::new();
++                    let shallow = node.clone().map_children(|child| {
++                        let var = format!("?__act_edge_{}", *serial).parse().unwrap();
++                        *serial += 1;
++                        children.push((child, var));
++                        ast_part.add(ENodeOrVar::Var(var))
++                    });
++                    ast_part.add(ENodeOrVar::ENode(shallow));
++                    // Fresh child variables keep ACT metadata wildcards away
++                    // from egg's exact Lookup optimization.
++                    clauses.push((binder, ast_part));
++                    for (child, var) in children {
++                        append(ast, child, var, serial, clauses, postorder);
++                    }
++                }
++            }
++            postorder.push(binder);
++        }
++        for (&child, &root) in children.iter().zip(&roots) {
++            let mut part = Vec::new();
++            append(
++                &lhs.ast,
++                child,
++                root,
++                &mut serial,
++                &mut part,
++                &mut postorder,
++            );
++            clauses.push(part);
++        }
++        let first_operator = children
++            .iter()
++            .position(|id| matches!(&lhs.ast[*id], ENodeOrVar::ENode(_)));
++        let first = first_operator.unwrap_or(0);
++        let mut plan = Self {
++            roots,
++            postorder,
++            variables: Vec::new(),
++            clauses,
++            first,
++            query: None,
++        };
++        let mut variables = HashSet::new();
++        for (binder, ast) in plan.clauses.iter().flatten() {
++            variables.insert(*binder);
++            for node in ast.as_ref() {
++                if let ENodeOrVar::Var(var) = node {
++                    variables.insert(*var);
++                }
++            }
++        }
++        plan.variables = variables.into_iter().collect();
++        plan.variables.sort();
++        if first_operator.is_some() {
++            plan.query = Some(plan.compile(None));
++        }
++        plan
++    }
++
++    fn compile(&self, anchor: Option<&TensorOp>) -> MultiPattern<TensorOp> {
++        let mut clauses = Vec::new();
++        if let Some(node) = anchor {
++            // egg 0.10 rejects a bare variable as its first clause. Anchor an
++            // all-identity rule in a real node of the searched e-class.
++            let mut ast = PatternAst::default();
++            let mut index = 0;
++            let shallow = node.clone().map_children(|_| {
++                let var = format!("?__act_anchor_{index}").parse().unwrap();
++                index += 1;
++                ast.add(ENodeOrVar::Var(var))
++            });
++            ast.add(ENodeOrVar::ENode(shallow));
++            clauses.push((self.roots[self.first], ast));
++        }
++        for slot in std::iter::once(self.first)
++            .chain((0..self.clauses.len()).filter(|&slot| slot != self.first))
++        {
++            clauses.extend(self.clauses[slot].iter().cloned());
++        }
++        MultiPattern::new(clauses)
++    }
++
++    fn query<'a>(&'a self, graph: &Graph, anchor: Id) -> Cow<'a, MultiPattern<TensorOp>> {
++        if let Some(query) = &self.query {
++            Cow::Borrowed(query)
++        } else {
++            Cow::Owned(self.compile(graph[anchor].nodes.first()))
++        }
++    }
++
++    fn ids(&self, graph: &Graph, subst: &Subst) -> Vec<Id> {
++        self.postorder
++            .iter()
++            .map(|var| graph.find(subst[*var]))
++            .collect()
++    }
++
++    fn results(&self, graph: &Graph, subst: &Subst) -> Vec<Id> {
++        self.roots
++            .iter()
++            .map(|var| graph.find(subst[*var]))
++            .collect()
++    }
++}
++
++#[derive(Clone, PartialEq, Eq, Hash)]
++struct AppliedKey {
++    rule: String,
++    inputs: Vec<Id>,
++    results: Vec<Id>,
++    metadata: Vec<Option<String>>,
++}
++
++impl AppliedKey {
++    fn canonical(&self, graph: &Graph) -> Self {
++        Self {
++            rule: self.rule.clone(),
++            inputs: self.inputs.iter().map(|&id| graph.find(id)).collect(),
++            results: self.results.iter().map(|&id| graph.find(id)).collect(),
++            metadata: self.metadata.clone(),
++        }
++    }
++}
++
++#[derive(Clone, Debug, Serialize)]
++pub struct RuleReport {
++    pub searches: usize,
++    pub limits: SearchLimits,
++    pub application_limit: usize,
++    pub applications: usize,
++    pub disabled: Option<StopReason>,
++    pub stop_reason: StopReason,
++}
++
++#[derive(Clone, Debug, Serialize)]
++pub struct DirectReport {
++    pub policy: &'static str,
++    pub completeness_scope: &'static str,
++    pub runner_stop: Option<String>,
++    pub application_limit: usize,
++    pub applications: usize,
++    pub apply_attempts: usize,
++    pub rejected_preconditions: usize,
++    pub rejected_at_apply: usize,
++    pub disabled: bool,
++    pub complete: bool,
++    pub pending_work: bool,
++    pub rules: BTreeMap<String, RuleReport>,
++    pub rule_search: BTreeMap<String, SearchReport>,
++    pub search: SearchReport,
++}
++
++struct ControlState {
++    budget: SearchBudget,
++    application_limit: usize,
++    applications: usize,
++    apply_attempts: usize,
++    rejected_preconditions: usize,
++    rejected_at_apply: usize,
++    rules: BTreeMap<String, RuleReport>,
++    rule_order: Vec<String>,
++    rule_budgets: BTreeMap<String, SearchBudget>,
++    partitioned: bool,
++    seen: HashSet<AppliedKey>,
++}
++
++impl ControlState {
++    fn partition(&mut self) {
++        if self.partitioned {
++            return;
++        }
++        self.partitioned = true;
++        let count = self.rule_order.len();
++        if count == 0 {
++            return;
++        }
++        let total = self.budget.report.limits;
++        let share = |value: usize, index: usize| value / count + usize::from(index < value % count);
++        for (index, name) in self.rule_order.iter().enumerate() {
++            let limits = SearchLimits {
++                raw_matches: share(total.raw_matches, index),
++                search_calls: share(total.search_calls, index),
++                attempts: share(total.attempts, index),
++            };
++            let rule = self.rules.get_mut(name).unwrap();
++            rule.limits = limits;
++            rule.application_limit = share(self.application_limit, index);
++            self.rule_budgets.insert(
++                name.clone(),
++                SearchBudget::new(limits, self.budget.deadline()),
++            );
++        }
++    }
++
++    fn disable_rule(&mut self, name: &str, reason: StopReason) {
++        let rule = self.rules.get_mut(name).unwrap();
++        rule.disabled.get_or_insert(reason);
++        rule.stop_reason = rule.disabled.unwrap();
++    }
++
++    fn merge_budget(&mut self, name: &str, budget: SearchBudget) {
++        self.rule_budgets.insert(name.into(), budget);
++        let total = &mut self.budget.report;
++        total.search_calls = 0;
++        total.raw_matches = 0;
++        total.replayed_matches = 0;
++        total.attempts = 0;
++        total.rejected_types = 0;
++        total.rejected_inputs = 0;
++        total.duplicates = 0;
++        total.accepted = 0;
++        for budget in self.rule_budgets.values() {
++            let report = &budget.report;
++            total.search_calls += report.search_calls;
++            total.raw_matches += report.raw_matches;
++            total.replayed_matches += report.replayed_matches;
++            total.attempts += report.attempts;
++            total.rejected_types += report.rejected_types;
++            total.rejected_inputs += report.rejected_inputs;
++            total.duplicates += report.duplicates;
++            total.accepted += report.accepted;
++        }
++    }
++
++    fn finish_rule(&mut self, name: &str, reason: StopReason) {
++        let rule = self.rules.get_mut(name).unwrap();
++        rule.stop_reason = rule.disabled.unwrap_or(reason);
++        if let Some(budget) = self.rule_budgets.get_mut(name) {
++            budget.finish(rule.stop_reason);
++        }
++        let reason = self
++            .rules
++            .values()
++            .find_map(|rule| rule.disabled)
++            .unwrap_or_else(|| {
++                if self
++                    .rules
++                    .values()
++                    .all(|r| r.searches > 0 && r.stop_reason == StopReason::Exhausted)
++                {
++                    StopReason::Exhausted
++                } else {
++                    StopReason::CandidateTarget
++                }
++            });
++        self.budget.finish(reason);
++    }
++
++    fn canonicalize(&mut self, graph: &Graph) {
++        self.seen = self.seen.iter().map(|key| key.canonical(graph)).collect();
++    }
++}
++
++/// Monotonic lifetime limits partitioned equally across generated joint rules.
++/// Declaration order receives integer remainders. Unused shares are not borrowed,
++/// so an early broad ISA cannot consume a later rule's work/application budget.
++/// Ordinary scalar and IR rules continue when any/all joint shares are exhausted.
++#[derive(Clone)]
++pub struct DirectControl(Arc<Mutex<ControlState>>);
++
++impl DirectControl {
++    pub fn new(limits: SearchLimits, application_limit: usize, deadline: Option<Instant>) -> Self {
++        Self(Arc::new(Mutex::new(ControlState {
++            budget: SearchBudget::new(limits, deadline),
++            application_limit,
++            applications: 0,
++            apply_attempts: 0,
++            rejected_preconditions: 0,
++            rejected_at_apply: 0,
++            rules: BTreeMap::new(),
++            rule_order: Vec::new(),
++            rule_budgets: BTreeMap::new(),
++            partitioned: false,
++            seen: HashSet::new(),
++        })))
++    }
++
++    pub fn from_env(deadline: Option<Instant>) -> Self {
++        fn setting(name: &str, default: usize) -> usize {
++            std::env::var(name)
++                .ok()
++                .map(|text| text.parse().expect(name))
++                .unwrap_or(default)
++        }
++        let defaults = SearchLimits::default();
++        Self::new(
++            SearchLimits {
++                raw_matches: setting("ACT_JOINT_RAW_LIMIT", defaults.raw_matches),
++                search_calls: setting("ACT_JOINT_SEARCH_LIMIT", defaults.search_calls),
++                attempts: setting("ACT_JOINT_ATTEMPT_LIMIT", defaults.attempts),
++            },
++            setting("ACT_JOINT_LIMIT", 64),
++            deadline,
++        )
++    }
++
++    fn register(&self, name: &str) {
++        let mut state = self.0.lock().unwrap();
++        if state.rules.contains_key(name) {
++            return;
++        }
++        assert!(
++            !state.partitioned,
++            "register all joint rules before using the control"
++        );
++        state.rule_order.push(name.into());
++        state.rules.insert(
++            name.into(),
++            RuleReport {
++                searches: 0,
++                limits: SearchLimits {
++                    raw_matches: 0,
++                    search_calls: 0,
++                    attempts: 0,
++                },
++                application_limit: 0,
++                applications: 0,
++                disabled: None,
++                stop_reason: StopReason::CandidateTarget,
++            },
++        );
++    }
++
++    /// Bounded joint search owns its limits; Backoff must not discard a useful
++    /// batch merely because its raw structural match count exceeds a threshold.
++    pub fn scheduler(&self) -> DirectScheduler {
++        let mut state = self.0.lock().unwrap();
++        state.partition();
++        let inner = state
++            .rules
++            .keys()
++            .fold(BackoffScheduler::default(), |scheduler, name| {
++                scheduler.do_not_ban(name.as_str())
++            });
++        DirectScheduler {
++            inner,
++            control: self.clone(),
++        }
++    }
++
++    pub fn report(&self) -> DirectReport {
++        let state = self.0.lock().unwrap();
++        let complete = state.rules.values().all(|r| {
++            r.disabled.is_none() && r.searches > 0 && r.stop_reason == StopReason::Exhausted
++        });
++        let mut search = state.budget.report.clone();
++        search.complete = complete;
++        search.pending_work = !complete;
++        DirectReport {
++            policy: "lifetime_equal_rule_shares",
++            completeness_scope: "last_search_snapshots",
++            runner_stop: None,
++            application_limit: state.application_limit,
++            applications: state.applications,
++            apply_attempts: state.apply_attempts,
++            rejected_preconditions: state.rejected_preconditions,
++            rejected_at_apply: state.rejected_at_apply,
++            disabled: !state.rules.is_empty()
++                && state.rules.values().all(|rule| rule.disabled.is_some()),
++            complete,
++            pending_work: !complete,
++            rules: state.rules.clone(),
++            rule_search: state
++                .rule_budgets
++                .iter()
++                .map(|(name, budget)| (name.clone(), budget.report.clone()))
++                .collect(),
++            search,
++        }
++    }
++
++    pub fn print_report(&self) {
++        println!(
++            "ACT_DIRECT_REWRITE {}",
++            serde_json::to_string(&self.report()).unwrap()
++        );
++    }
++
++    pub fn print_final_report(&self, runner_stop: &egg::StopReason) {
++        let mut report = self.report();
++        report.runner_stop = Some(format!("{runner_stop:?}"));
++        println!(
++            "ACT_DIRECT_REWRITE {}",
++            serde_json::to_string(&report).unwrap()
++        );
++    }
++}
++
++/// A capped useful-match prefix may consist entirely of existing producers.
++/// Applying it still advances the seen set, so allow the next bounded search
++/// before declaring saturation. A disabled lifetime budget has no such work.
++pub struct DirectScheduler {
++    inner: BackoffScheduler,
++    control: DirectControl,
++}
++
++impl RewriteScheduler<TensorOp, TensorInfo> for DirectScheduler {
++    fn can_stop(&mut self, iteration: usize) -> bool {
++        let pending = {
++            let state = self.control.0.lock().unwrap();
++            state.rules.values().any(|rule| {
++                rule.disabled.is_none()
++                    && rule.searches > 0
++                    && rule.stop_reason == StopReason::CandidateTarget
++            })
++        };
++        !pending
++            && <BackoffScheduler as RewriteScheduler<TensorOp, TensorInfo>>::can_stop(
++                &mut self.inner,
++                iteration,
++            )
++    }
++
++    fn search_rewrite<'a>(
++        &mut self,
++        iteration: usize,
++        graph: &Graph,
++        rewrite: &'a Rewrite<TensorOp, TensorInfo>,
++    ) -> Vec<SearchMatches<'a, TensorOp>> {
++        self.inner.search_rewrite(iteration, graph, rewrite)
++    }
++}
++
++#[derive(Clone)]
++struct JointRule {
++    name: String,
++    plan: Arc<MatchPlan>,
++    result_types: Vec<ResultType>,
++    rhs: Pattern<TensorOp>,
++    input_vars: Vec<Var>,
++    functions: Functions,
++    control: DirectControl,
++}
++
++impl JointRule {
++    fn compatible(&self, graph: &Graph, slot: usize, id: Id) -> bool {
++        let (dtype, shape) = &self.result_types[slot];
++        let info = &graph[id].data;
++        tuple_elements(graph, id).is_none()
++            && info.dtype == *dtype
++            && info.shape.len() == shape.len()
++            && info
++                .shape
++                .iter()
++                .zip(shape)
++                .all(|(actual, expected)| expected.is_none_or(|n| *actual == n))
++    }
++
++    fn key(&self, graph: &Graph, subst: &Subst, ids: &Vec<Id>) -> AppliedKey {
++        AppliedKey {
++            rule: self.name.clone(),
++            inputs: self
++                .input_vars
++                .iter()
++                .map(|var| graph.find(subst[*var]))
++                .collect(),
++            results: self.plan.results(graph, subst),
++            // Generated ISA metadata comes from semantic shapes/attributes;
++            // its _lhs_enodes argument is deliberately unused by the generator.
++            metadata: (self.functions.metadata)(graph, ids, &Vec::new()),
++        }
++    }
++
++    fn search_anchors<'a>(
++        &'a self,
++        graph: &Graph,
++        mut anchors: Vec<Id>,
++        limit: usize,
++    ) -> Vec<SearchMatches<'a, TensorOp>> {
++        if limit == 0 {
++            return Vec::new();
++        }
++        let mut state = self.control.0.lock().unwrap();
++        state.partition();
++        if state.rules[&self.name].disabled.is_some() {
++            return Vec::new();
++        }
++        let remaining = state.rules[&self.name]
++            .application_limit
++            .saturating_sub(state.rules[&self.name].applications);
++        if remaining == 0 {
++            state.disable_rule(&self.name, StopReason::TupleLimit);
++            state.finish_rule(&self.name, StopReason::TupleLimit);
++            return Vec::new();
++        }
++        if let Err(reason) = state.budget.check_deadline() {
++            state.disable_rule(&self.name, reason);
++            state.finish_rule(&self.name, reason);
++            return Vec::new();
++        }
++        let mut budget = state.rule_budgets.remove(&self.name).unwrap();
++        state.canonicalize(graph);
++        state.rules.get_mut(&self.name).unwrap().searches += 1;
++        anchors.sort();
++        anchors.dedup();
++        let mut cursors: VecDeque<_> = anchors
++            .into_iter()
++            .filter(|&id| self.compatible(graph, self.plan.first, id))
++            .map(|id| (id, MatchCursor::new(id)))
++            .collect();
++        let target = limit.min(remaining);
++        let mut count = 0;
++        let mut unique = HashSet::new();
++        let mut found: BTreeMap<Id, Vec<Subst>> = BTreeMap::new();
++        let mut truncation = None;
++        while let Some((anchor, mut cursor)) = cursors.pop_front() {
++            let query = self.plan.query(graph, anchor);
++            match cursor.step(graph, &query, &mut budget) {
++                SearchStep::Exhausted => continue,
++                SearchStep::Truncated(reason) => {
++                    truncation.get_or_insert(reason);
++                    continue;
++                }
++                SearchStep::Match { anchor, subst } => {
++                    if let Err(reason) = budget.try_attempt() {
++                        truncation.get_or_insert(reason);
++                        break;
++                    }
++                    cursors.push_back((anchor, cursor));
++                    if !self
++                        .plan
++                        .roots
++                        .iter()
++                        .enumerate()
++                        .all(|(slot, var)| self.compatible(graph, slot, subst[*var]))
++                    {
++                        budget.report.rejected_types += 1;
++                        continue;
++                    }
++                    let ids = self.plan.ids(graph, &subst);
++                    if !(self.functions.precondition)(graph, &ids) {
++                        state.rejected_preconditions += 1;
++                        continue;
++                    }
++                    if let Err(reason) = budget.check_deadline() {
++                        truncation.get_or_insert(reason);
++                        break;
++                    }
++                    let key = self.key(graph, &subst, &ids);
++                    if state.seen.contains(&key) || !unique.insert(key) {
++                        budget.report.duplicates += 1;
++                        continue;
++                    }
++                    found.entry(anchor).or_default().push(subst);
++                    count += 1;
++                    budget.report.accepted += 1;
++                    if count == target {
++                        break;
++                    }
++                }
++            }
++        }
++        let reason = if let Some(reason) = truncation {
++            state.disable_rule(&self.name, reason);
++            reason
++        } else if count == target {
++            StopReason::CandidateTarget
++        } else {
++            StopReason::Exhausted
++        };
++        budget.finish(reason);
++        state.merge_budget(&self.name, budget);
++        state.finish_rule(&self.name, reason);
++        found
++            .into_iter()
++            .map(|(eclass, substs)| SearchMatches {
++                eclass,
++                substs,
++                ast: None,
++            })
++            .collect()
++    }
++}
++
++impl Searcher<TensorOp, TensorInfo> for JointRule {
++    fn search_eclass_with_limit(
++        &self,
++        graph: &Graph,
++        eclass: Id,
++        limit: usize,
++    ) -> Option<SearchMatches<'_, TensorOp>> {
++        self.search_anchors(graph, vec![graph.find(eclass)], limit)
++            .pop()
++    }
++
++    fn search_with_limit(&self, graph: &Graph, limit: usize) -> Vec<SearchMatches<'_, TensorOp>> {
++        self.search_anchors(
++            graph,
++            graph.classes().map(|class| class.id).collect(),
++            limit,
++        )
++    }
++
++    fn vars(&self) -> Vec<Var> {
++        self.plan.variables.clone()
++    }
++}
++
++impl Applier<TensorOp, TensorInfo> for JointRule {
++    fn apply_one(
++        &self,
++        graph: &mut Graph,
++        _anchor: Id,
++        subst: &Subst,
++        _ast: Option<&PatternAst<TensorOp>>,
++        _name: Symbol,
++    ) -> Vec<Id> {
++        let mut state = self.control.0.lock().unwrap();
++        state.partition();
++        if state.rules[&self.name].applications >= state.rules[&self.name].application_limit {
++            state.disable_rule(&self.name, StopReason::TupleLimit);
++            state.finish_rule(&self.name, StopReason::TupleLimit);
++            return Vec::new();
++        }
++        if let Err(reason) = state.budget.check_deadline() {
++            state.disable_rule(&self.name, reason);
++            state.finish_rule(&self.name, reason);
++            return Vec::new();
++        }
++        state.apply_attempts += 1;
++        let ids = self.plan.ids(graph, subst);
++        // Search substitutions are snapshots. Recheck the complete ISA gate
++        // after preceding rewrites/unions and before any graph mutation.
++        if !(self.functions.precondition)(graph, &ids) {
++            state.rejected_at_apply += 1;
++            return Vec::new();
++        }
++        if let Err(reason) = state.budget.check_deadline() {
++            state.disable_rule(&self.name, reason);
++            state.finish_rule(&self.name, reason);
++            return Vec::new();
++        }
++        state.canonicalize(graph);
++        let key = self.key(graph, subst, &ids);
++        if !state.seen.insert(key.clone()) {
++            state
++                .rule_budgets
++                .get_mut(&self.name)
++                .unwrap()
++                .report
++                .duplicates += 1;
++            state.budget.report.duplicates += 1;
++            return Vec::new();
++        }
++        let results = key.results;
++        let infos: Vec<_> = results.iter().map(|&id| graph[id].data.clone()).collect();
++        let tuple = graph.add(TensorOp::OpTuple(results.clone()));
++        let mut rhs_ids = vec![0.into(); self.rhs.ast.len()];
++        let producer = super::applier::apply_pat(
++            graph,
++            self.rhs.ast.as_ref(),
++            &mut rhs_ids,
++            &key.metadata,
++            subst,
++        );
++        (self.functions.set_shapes)(graph, &ids, &rhs_ids);
++        let mut changed = Vec::new();
++        if graph.union(tuple, producer) {
++            changed.push(producer);
++        }
++        for (index, (&value, info)) in results.iter().zip(infos).enumerate() {
++            let projection = graph.add(TensorOp::OpGetTupleElement(index, [producer]));
++            graph.set_analysis_data(projection, info);
++            if graph.union(value, projection) {
++                changed.push(projection);
++            }
++        }
++        if !changed.is_empty() {
++            state.applications += 1;
++            state.budget.report.registered += 1;
++            state
++                .rule_budgets
++                .get_mut(&self.name)
++                .unwrap()
++                .report
++                .registered += 1;
++            let rule = state.rules.get_mut(&self.name).unwrap();
++            rule.applications += 1;
++            if rule.applications >= rule.application_limit {
++                state.disable_rule(&self.name, StopReason::TupleLimit);
++                state.finish_rule(&self.name, StopReason::TupleLimit);
++            }
++        }
++        changed
++    }
++
++    fn vars(&self) -> Vec<Var> {
++        let mut vars = self.plan.variables.clone();
++        vars.extend(self.rhs.vars());
++        vars.sort();
++        vars.dedup();
++        vars
++    }
++}
++
++pub(super) fn rewrite(
++    name: &str,
++    lhs: Pattern<TensorOp>,
++    rhs: Pattern<TensorOp>,
++    result_types: Vec<ResultType>,
++    functions: Functions,
++    control: DirectControl,
++) -> Rewrite<TensorOp, TensorInfo> {
++    let plan = Arc::new(MatchPlan::new(&lhs));
++    assert_eq!(plan.roots.len(), result_types.len());
++    let input_vars = rhs.vars();
++    control.register(name);
++    let rule = JointRule {
++        name: name.into(),
++        plan,
++        result_types,
++        rhs,
++        input_vars,
++        functions,
++        control,
++    };
++    Rewrite::new(name, rule.clone(), rule).unwrap()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use egg::Runner;
++
++    fn matrix(graph: &mut Graph, op: TensorOp) -> Id {
++        let id = graph.add(op);
++        graph.set_analysis_data(
++            id,
++            TensorInfo {
++                shape: vec![64, 64],
++                dtype: Dtype::BF16,
++                is_const: false,
++            },
++        );
++        id
++    }
++
++    fn limits(value: usize) -> SearchLimits {
++        SearchLimits {
++            raw_matches: value,
++            search_calls: value,
++            attempts: value,
++        }
++    }
++
++    fn identity_gate(graph: &Graph, ids: &Vec<Id>) -> bool {
++        ids.len() == 2
++            && ids.iter().all(|&id| {
++                tuple_elements(graph, id).is_none()
++                    && graph[id].data.dtype == Dtype::BF16
++                    && graph[id].data.shape == [64, 64]
++            })
++    }
++
++    fn reject(_: &Graph, _: &Vec<Id>) -> bool {
++        false
++    }
++
++    fn identity_rule(
++        name: &str,
++        control: DirectControl,
++        precondition: fn(&Graph, &Vec<Id>) -> bool,
++    ) -> Rewrite<TensorOp, TensorInfo> {
++        // A logical tuple constructor is sufficient to test search/application
++        // bookkeeping without depending on any generated target's ISA enum.
++        rewrite(
++            name,
++            "(tuple ?p0 ?p1)".parse().unwrap(),
++            "(tuple ?p0 ?p1)".parse().unwrap(),
++            vec![(Dtype::BF16, vec![Some(64), Some(64)]); 2],
++            Functions {
++                precondition,
++                metadata: |_, _, _| vec![None; 3],
++                set_shapes: |_, _, _| {},
++            },
++            control,
++        )
++    }
++
++    fn seed_tuple(graph: &mut Graph, values: [Id; 2]) {
++        let tuple = graph.add(TensorOp::OpTuple(values.to_vec()));
++        for (index, value) in values.into_iter().enumerate() {
++            let projection = graph.add(TensorOp::OpGetTupleElement(index, [tuple]));
++            graph.set_analysis_data(projection, graph[value].data.clone());
++            graph.union(value, projection);
++        }
++        graph.rebuild();
++    }
++
++    #[test]
++    fn expanded_binding_order_preserves_shared_and_repeated_operands() {
++        let mut graph = Graph::default();
++        let a = matrix(&mut graph, TensorOp::Var("a".into()));
++        let b = matrix(&mut graph, TensorOp::Var("b".into()));
++        let square = matrix(&mut graph, TensorOp::OpMultiply([a, a]));
++        matrix(&mut graph, TensorOp::OpMultiply([a, b]));
++        let copy = matrix(&mut graph, TensorOp::OpCopy([a]));
++        graph.rebuild();
++        let lhs = "(tuple (multiply ?p0 ?p0__use1) (copy ?p0__use2))"
++            .parse()
++            .unwrap();
++        let plan = MatchPlan::new(&lhs);
++        let query = plan.query(&graph, square);
++        let found = query.search_eclass(&graph, square).unwrap();
++        assert_eq!(found.substs.len(), 1);
++        assert_eq!(
++            plan.ids(&graph, &found.substs[0]),
++            vec![a, a, square, a, copy]
++        );
++        assert_eq!(plan.results(&graph, &found.substs[0]), vec![square, copy]);
++    }
++
++    #[test]
++    fn nested_metadata_wildcards_keep_expanded_result_order() {
++        let mut graph = Graph::default();
++        let a = matrix(&mut graph, TensorOp::Var("a".into()));
++        let first = matrix(&mut graph, TensorOp::OpReshape("32,128".into(), [a]));
++        let inner = matrix(&mut graph, TensorOp::OpReshape("16,256".into(), [a]));
++        let second = matrix(&mut graph, TensorOp::OpCopy([inner]));
++        graph.rebuild();
++        let lhs = "(tuple (reshape_? ?p0) (copy (reshape_? ?p0__use1)))"
++            .parse()
++            .unwrap();
++        let plan = MatchPlan::new(&lhs);
++        let query = plan.query(&graph, first);
++        let found = query.search_eclass(&graph, first).unwrap();
++        assert!(found
++            .substs
++            .iter()
++            .any(|subst| plan.ids(&graph, subst) == vec![a, first, a, inner, second]));
++    }
++
++    #[test]
++    fn rejecting_full_preconditions_never_materializes_a_candidate_tuple() {
++        let mut graph = Graph::default();
++        matrix(&mut graph, TensorOp::Var("a".into()));
++        graph.rebuild();
++        let before = graph.total_size();
++        let control = DirectControl::new(limits(64), 4, None);
++        let rule = identity_rule("rejecting", control.clone(), reject);
++        assert!(rule.search(&graph).is_empty());
++        assert_eq!(graph.total_size(), before);
++        assert_eq!(control.report().rejected_preconditions, 1);
++        assert!(control.report().complete);
++    }
++
++    #[test]
++    fn no_op_prefix_does_not_falsely_saturate_before_a_new_candidate() {
++        let mut graph = Graph::default();
++        let a = matrix(&mut graph, TensorOp::Var("a".into()));
++        let b = matrix(&mut graph, TensorOp::Var("b".into()));
++        seed_tuple(&mut graph, [a, a]);
++        seed_tuple(&mut graph, [a, b]);
++        let control = DirectControl::new(limits(128), 1, None);
++        let rule = identity_rule("identity", control.clone(), identity_gate);
++        let runner = Runner::default()
++            .with_egraph(graph)
++            .with_scheduler(control.scheduler())
++            .with_iter_limit(8)
++            .run(&[rule]);
++        assert!(runner.iterations.len() >= 2);
++        assert_eq!(control.report().applications, 1);
++        assert!(runner.egraph.classes().any(|class| class.nodes.iter().any(|node|
++            matches!(node, TensorOp::OpTuple(ids) if runner.egraph.find(ids[0]) == runner.egraph.find(b)))));
++    }
++
++    #[test]
++    fn a_broad_rejected_rule_cannot_spend_a_later_rules_share() {
++        let mut graph = Graph::default();
++        for i in 0..4 {
++            matrix(&mut graph, TensorOp::Var(format!("v{i}")));
++        }
++        graph.rebuild();
++        let control = DirectControl::new(limits(16), 2, None);
++        let first = identity_rule("first", control.clone(), reject);
++        let later = identity_rule("later", control.clone(), identity_gate);
++        let runner = Runner::default()
++            .with_egraph(graph)
++            .with_scheduler(control.scheduler())
++            .with_iter_limit(8)
++            .run(&[first, later]);
++        let report = control.report();
++        assert_eq!(report.rules["first"].application_limit, 1);
++        assert_eq!(report.rules["later"].application_limit, 1);
++        assert_eq!(report.rules["first"].applications, 0);
++        assert_eq!(report.rules["later"].applications, 1);
++        assert!(report.rules["first"].disabled.is_some());
++        assert!(report.rule_search.values().all(|r| r.raw_matches <= 8));
++        assert!(report.search.raw_matches <= 16);
++        assert!(!report.complete);
++        assert!(runner.egraph.classes().any(|class| class
++            .nodes
++            .iter()
++            .any(|node| matches!(node, TensorOp::OpTuple(_)))));
++    }
++
++    #[test]
++    fn useful_application_quota_is_reserved_for_each_rule() {
++        let mut graph = Graph::default();
++        matrix(&mut graph, TensorOp::Var("a".into()));
++        matrix(&mut graph, TensorOp::Var("b".into()));
++        graph.rebuild();
++        let control = DirectControl::new(limits(256), 2, None);
++        let first = identity_rule("first", control.clone(), identity_gate);
++        let later = identity_rule("later", control.clone(), identity_gate);
++        Runner::default()
++            .with_egraph(graph)
++            .with_scheduler(control.scheduler())
++            .with_iter_limit(8)
++            .run(&[first, later]);
++        let report = control.report();
++        assert_eq!(report.rules["first"].applications, 1);
++        assert_eq!(report.rules["later"].applications, 1);
++        assert_eq!(report.applications, 2);
++        assert!(report.disabled);
++    }
++}
+diff --git a/act_backend/generic/src/pipeline.rs b/act_backend/generic/src/pipeline.rs
+--- a/act_backend/generic/src/pipeline.rs
++++ b/act_backend/generic/src/pipeline.rs
+@@ -325,27 +325,14 @@
+         return;
+     }
+ 
+-    // Multi-result semantics may match independent values even when the input
+-    // HLO has no explicit tuple. Refresh logical links at every Runner boundary;
+-    // generated IR-to-ISA rewrites still create all instruction candidates.
+     init_egraph.rebuild();
+-    let joint_limit = env::var("ACT_JOINT_LIMIT").ok()
+-        .map(|text| text.parse::<usize>().expect("Invalid ACT_JOINT_LIMIT"))
+-        .unwrap_or(64);
+-    let work_limit = |name: &str| env::var(name).ok()
+-        .map(|text| text.parse::<usize>().unwrap_or_else(|_| panic!("Invalid {name}")))
+-        .unwrap_or(4096);
+-    let joint_work = isel::bounded_search::SearchLimits {
+-        raw_matches: work_limit("ACT_JOINT_RAW_LIMIT"),
+-        search_calls: work_limit("ACT_JOINT_SEARCH_LIMIT"),
+-        attempts: work_limit("ACT_JOINT_ATTEMPT_LIMIT"),
+-    };
+-    let mut discovery = isel::discovery::Discovery::with_limits(
+-        &init_egraph, joint_limit, joint_work, Some(start + TIME_LIMIT));
++    // Joint matching is a generated Rewrite Searcher. Its monotonic per-rule
++    // shares bound joint work while scalar rules retain normal ACT scheduling.
++    let direct = isel::rewrites::multi::DirectControl::from_env(Some(start + TIME_LIMIT));
+ 
+     let mut limit: usize = SLOW_LIMIT_START;
+ 
+-    let rules = isel::rewrites::get_rewrites();
++    let rules = isel::rewrites::get_rewrites_with_control(direct.clone());
+     let inputs_for_hook = inputs.clone();
+     let hbm_offsets_for_hook = hbm_offsets.clone();
+     let outputs_for_hook = outputs.clone();
+@@ -358,26 +345,15 @@
+         // clone the Rcs
+         let pii_counter = pii_counter.clone();
+         let best = best.clone();
++        let direct_for_hook = direct.clone();
+ 
+         Runner::default()
+             .with_egraph(init_egraph)
+             .with_node_limit(5000)
+             .with_time_limit(TIME_LIMIT)
+-            .with_hook(move |runner| {
+-                // The preceding iteration may have added or merged matches.
+-                // Drain this bounded snapshot before allowing saturation.
+-                runner.egraph.rebuild();
+-                if !runner.iterations.is_empty() { discovery.refresh_until(&runner.egraph, Some(start + TIME_LIMIT)); }
+-                while !discovery.exhausted() && start.elapsed() < TIME_LIMIT {
+-                    discovery.batch(&mut runner.egraph, joint_limit, start + TIME_LIMIT);
+-                }
+-                println!("ACT_DISCOVERY {}", serde_json::json!({
+-                    "variant": "multipattern",
+-                    "iteration": runner.iterations.len(),
+-                    "tuple_limit": joint_limit,
+-                    "registered_tuples": discovery.registered_count(),
+-                    "search": discovery.report(),
+-                }));
++            .with_scheduler(direct.scheduler())
++            .with_hook(move |_| {
++                direct_for_hook.print_report();
+                 Ok(())
+             })
+             .with_hook(move |runner| {
+@@ -441,6 +417,8 @@
+             .run(&rules.clone())
+     };
+ 
++    direct.print_final_report(runner.stop_reason.as_ref().unwrap());
++
+     // Logic based on the stop reason:
+     // 1. TimeLimit: No more extraction, just return.
+     // 2. NodeLimit, Saturated: Run extraction until time limit is hit.
+diff --git a/act_backend/isel_ir2isa_rewrites_rs_generator.py b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+--- a/act_backend/isel_ir2isa_rewrites_rs_generator.py
++++ b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+@@ -97,7 +97,9 @@
+ 
+ def rust_functions(metadata, semantics):
+     name = metadata.name
+-    count = len(semantics.postorder) + (len(semantics.results) > 1)
++    # Direct multi-result matches bind semantic nodes without a speculative
++    # aggregate root. Both scalar and multi-result gates receive just these IDs.
++    count = len(semantics.postorder)
+     attrs = ", ".join(semantics.attributes)
+     code = f"""fn infer_{name}(egraph: &EGraph<TensorOp, TensorInfo>, lhs_eclasses: &Vec<Id>) -> Option<Vec<i64>> {{
+     if lhs_eclasses.len() != {count} {{ return None; }}

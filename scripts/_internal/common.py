@@ -15,15 +15,16 @@ TOOLCHAINS = {
     "baseline": ("baseline",),
     "multi-result": ("baseline", "multi-result"),
     "multipattern": ("baseline", "multi-result", "multipattern"),
+    "multipattern-rewrite": ("baseline", "multi-result", "multipattern", "multipattern-rewrite"),
 }
 # The run shortcut and verify's default paths use this list. ISA scripts run directly.
 CASES = {
     "qkv": {"target": "QKV", "isa": "QKV.py",
             "default_workload": "workloads/attention.hlo", "default_toolchain": "baseline",
-            "toolchains": ("baseline", "multi-result", "multipattern")},
+            "toolchains": ("baseline", "multi-result", "multipattern", "multipattern-rewrite")},
     "double_gemm": {"target": "QKVDoubleGemm", "isa": "QKVDoubleGemm.py",
                     "default_workload": "workloads/two_gemm_concat.hlo", "default_toolchain": "multi-result",
-                    "toolchains": ("multi-result", "multipattern")},
+                    "toolchains": ("multi-result", "multipattern", "multipattern-rewrite")},
 }
 
 

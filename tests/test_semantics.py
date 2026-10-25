@@ -1,4 +1,5 @@
 """One explicit tuple return: ordered ports shared by TAIDL, Backend and Oracle."""
+import os
 import unittest
 
 from act_backend.generator import _get_instruction_metadata
@@ -144,7 +145,12 @@ class SemanticsTests(unittest.TestCase):
         self.assertEqual(sum(node.ROOT() is not None for node in inst.semantics_ast.instruction()), 1)
         source = generate_ir2isa_rust_functions(inst, get_backend_template_loader())
         self.assertIn("joint::inputs_available", source)
-        self.assertIn("lhs_eclasses.len() != 7", source)
+        # Direct joint rewrites bind the six semantic occurrences themselves;
+        # the legacy tuple-pattern matcher also passes its aggregate root.
+        expected_arity = 6 if os.environ.get("ACT_TOOLCHAIN") == "multipattern-rewrite" else 7
+        self.assertIn(f"lhs_eclasses.len() != {expected_arity}", source)
+        self.assertIn("value: lhs_eclasses[2], operands: vec![lhs_eclasses[0], lhs_eclasses[1]]", source)
+        self.assertIn("value: lhs_eclasses[5], operands: vec![lhs_eclasses[3], lhs_eclasses[4]]", source)
         self.assertIn("vec![None; 5]", source)
         self.assertNotIn("set_analysis_data", source)
 

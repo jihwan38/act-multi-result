@@ -64,6 +64,8 @@ def main():
     # remain unchanged after running the Rust tests.
     suites = {"QKV": ("gte_frontend", "program_outputs", "recursive_tuples", "scalar_buffers"),
               "QKVDoubleGemm": ("iterative_discovery",)}
+    if "multipattern-rewrite" in TOOLCHAINS[args.toolchain]:
+        suites["QKVDoubleGemm"] += ("direct_rewrite",)
     with toolchain_lock(args.toolchain):
         for target, suites_for_target in suites.items():
             source = build_dir / "targets" / target / "backend"

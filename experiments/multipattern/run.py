@@ -117,6 +117,12 @@ def environment(record):
     return env
 
 
+def quota_scope(record):
+    target = Path(record["base"]) / "targets" / record.get("target", TARGET) / "backend"
+    return ("multi_result_rule_applications" if (target / "src/isel/rewrites/multi.rs").is_file()
+            else "discovered_tuple_registrations")
+
+
 def build(args):
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
@@ -228,18 +234,26 @@ def compile_case(record, case, directory, timeout, limits):
     result = command([base / "backends" / target_name, "--input", case["hlo"], "--output", assembly,
                       "--log", directory / "compiler"], env, directory / "compile", timeout, measure=True)
     result.update(toolchain=record["toolchain"], case=case["name"], discovery_limits=limits,
+                  joint_limit_scope=quota_scope(record),
                   assembly=str(assembly), binary_sha256=sha(base / "backends" / target_name),
                   source_fingerprint=record["source_fingerprint"], hlo_sha256=case["hlo_sha256"])
     result["effective_act_environment"] = {key: value for key, value in env.items() if key.startswith("ACT_")}
-    reports = []
+    reports, direct_reports = [], []
     for line in (directory / "compile/stdout.log").read_text().splitlines():
         if "ACT_DISCOVERY " in line:
             reports.append(json.loads(line.split("ACT_DISCOVERY ", 1)[1]))
+        if "ACT_DIRECT_REWRITE " in line:
+            direct_reports.append(json.loads(line.split("ACT_DIRECT_REWRITE ", 1)[1]))
     result["discovery_reports"] = reports
     result["discovery_work_totals"] = {
         key: sum(report["search"].get(key, 0) for report in reports)
         for key in ("search_calls", "raw_matches", "replayed_matches", "attempts", "accepted", "registered")
     } if reports else None
+    # Discovery refresh counters are separate snapshots. Direct-rule counters
+    # accumulate over the lifetime of the compiler, so take only the last one.
+    result["direct_rewrite_reports"] = direct_reports
+    result["direct_work_totals"] = direct_reports[-1]["search"] if direct_reports else None
+    result["direct_final_report"] = direct_reports[-1] if direct_reports else None
     result["candidate_pii_count"] = len(list((directory / "compiler").glob("*.pii")))
     result["candidate_assembly_count"] = len(list((directory / "compiler").glob("*.py")))
     if assembly.is_file():
@@ -252,6 +266,8 @@ def compile_case(record, case, directory, timeout, limits):
         result["required_calls_present"] = all(calls[name] > 0 for name in case["require_calls"])
     else:
         result["required_calls_present"] = False
+    result["expected_joint_calls"] = case["require_calls"]
+    result["has_selection_expectation"] = bool(case["require_calls"])
     result["runtime_unchanged"] = all(sha(path) == digest for path, digest in record["runtime_sha256"].items())
     write_json(directory / "result.json", result)
     return result
@@ -282,6 +298,7 @@ def run(args, measured):
                      "repeats": args.repeats if measured else 1, "warmups": args.warmups if measured else 0,
                      "timeout_seconds": args.timeout,
                      "allow_fallback": args.allow_fallback,
+                     "joint_limit_scopes": {mode: quota_scope(record) for mode, record in records.items()},
                      "host": platform.platform(), "python": sys.executable,
                      "affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
                      "cpu_model": next((line.split(':', 1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
@@ -332,7 +349,8 @@ def run(args, measured):
                 metrics[name] = {"count": len(values), "median": statistics.median(values), "min": min(values), "max": max(values)} if values else None
             summary["variants"][mode] = {"samples": len(rows), "passed": sum(row["passed"] for row in rows),
                                            "correctness_passed": sum(row["correctness_pass"] for row in rows),
-                                           "selection_expectations_passed": sum(row["selection_expectations_pass"] for row in rows),
+                                           "selection_expectations_samples": sum(row["has_selection_expectation"] for row in rows),
+                                           "selection_expectations_passed": sum(row["selection_expectations_pass"] for row in rows if row["has_selection_expectation"]),
                                            "failures": [index for index, row in enumerate(rows) if not row["passed"]], "metrics": metrics}
         summaries.append(summary)
     write_json(destination / "summary.json", summaries)
