@@ -4,6 +4,8 @@ ACT PLDI 튜토리얼처럼 **ISA Python 실행 → 생성된 backend로 HLO 컴
 순서로 사용한다. QKV는 기존 단일 출력 ACT를, DoubleGEMM은 다중 출력 확장을 살펴보는 예제다.
 Linux·Conda 환경을 사용하며 Oracle은 CPU에서 실행한다.
 
+**인수인계:** [연구 요약](handoff/README.md) · [공유용 PDF](handoff/ACT-handoff.pdf) · [자료와 근거](handoff/SOURCES.md)
+
 ## 현재 상태
 
 다중 결과 지원과 세 검색 구현의 비교를 마무리하고, 코드·실험·측정 자료를 `main`에 통합했다.
@@ -346,6 +348,7 @@ scripts/
   test.sh              회귀 테스트 실행
   _internal/           위 명령이 사용하는 공통 코드·설치 보조 도구
 tests/                 Python·Rust 회귀 테스트와 테스트 전용 HLO
+handoff/               인계 본문·공유용 PDF·자료 안내·검증 요약
 build/                 생성된 소스·compiler·assembly·검증 결과; Git 제외
 ```
 

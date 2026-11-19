@@ -1,0 +1,3479 @@
+{
+  "rtl_sha256": "72bb021234b8579c13e85cd64af037d46a5eb97613cb216bd5bd4423d3dd096d",
+  "verified_processes": 72,
+  "verified_kernel_invocations": 144,
+  "aggregates": [
+    {
+      "workload": "two_gemm",
+      "mode": "sequential",
+      "median_cycles": [
+        1089.0,
+        592.0
+      ],
+      "range_cycles": [
+        [
+          1070,
+          1089
+        ],
+        [
+          591,
+          602
+        ]
+      ],
+      "double_gemm_count": 0
+    },
+    {
+      "workload": "two_gemm",
+      "mode": "manual_parallel",
+      "median_cycles": [
+        1005.0,
+        511.0
+      ],
+      "range_cycles": [
+        [
+          989,
+          1005
+        ],
+        [
+          511,
+          522
+        ]
+      ],
+      "double_gemm_count": 1
+    },
+    {
+      "workload": "two_gemm",
+      "mode": "act",
+      "median_cycles": [
+        1005.0,
+        511.0
+      ],
+      "range_cycles": [
+        [
+          989,
+          1008
+        ],
+        [
+          511,
+          522
+        ]
+      ],
+      "double_gemm_count": 1
+    },
+    {
+      "workload": "shared_input",
+      "mode": "sequential",
+      "median_cycles": [
+        1007.0,
+        590.0
+      ],
+      "range_cycles": [
+        [
+          975,
+          1007
+        ],
+        [
+          590,
+          593
+        ]
+      ],
+      "double_gemm_count": 0
+    },
+    {
+      "workload": "shared_input",
+      "mode": "manual_parallel",
+      "median_cycles": [
+        877.0,
+        509.0
+      ],
+      "range_cycles": [
+        [
+          848,
+          878
+        ],
+        [
+          508,
+          513
+        ]
+      ],
+      "double_gemm_count": 1
+    },
+    {
+      "workload": "shared_input",
+      "mode": "act",
+      "median_cycles": [
+        959.0,
+        546.0
+      ],
+      "range_cycles": [
+        [
+          932,
+          959
+        ],
+        [
+          544,
+          546
+        ]
+      ],
+      "double_gemm_count": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "mode": "sequential",
+      "median_cycles": [
+        879.0,
+        572.0
+      ],
+      "range_cycles": [
+        [
+          879,
+          881
+        ],
+        [
+          571,
+          572
+        ]
+      ],
+      "double_gemm_count": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "mode": "manual_parallel",
+      "median_cycles": [
+        881.0,
+        571.0
+      ],
+      "range_cycles": [
+        [
+          881,
+          881
+        ],
+        [
+          571,
+          571
+        ]
+      ],
+      "double_gemm_count": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "mode": "act",
+      "median_cycles": [
+        878.0,
+        574.0
+      ],
+      "range_cycles": [
+        [
+          878,
+          882
+        ],
+        [
+          573,
+          574
+        ]
+      ],
+      "double_gemm_count": 0
+    },
+    {
+      "workload": "four_gemm",
+      "mode": "sequential",
+      "median_cycles": [
+        1916.0,
+        1192.0
+      ],
+      "range_cycles": [
+        [
+          1916,
+          2012
+        ],
+        [
+          1186,
+          1192
+        ]
+      ],
+      "double_gemm_count": 0
+    },
+    {
+      "workload": "four_gemm",
+      "mode": "manual_parallel",
+      "median_cycles": [
+        1807.0,
+        1027.0
+      ],
+      "range_cycles": [
+        [
+          1795,
+          1850
+        ],
+        [
+          1015,
+          1027
+        ]
+      ],
+      "double_gemm_count": 2
+    },
+    {
+      "workload": "four_gemm",
+      "mode": "act",
+      "median_cycles": [
+        1734.0,
+        1110.0
+      ],
+      "range_cycles": [
+        [
+          1734,
+          1829
+        ],
+        [
+          1110,
+          1111
+        ]
+      ],
+      "double_gemm_count": 1
+    }
+  ],
+  "trials": [
+    {
+      "workload": "dependent_gemm",
+      "dataset": "901",
+      "mode": "act",
+      "cycles": [
+        878,
+        574
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7276,
+            "end": 7405,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 7641,
+            "end": 7719,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17564,
+            "end": 17646,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 17832,
+            "end": 17910,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "901",
+      "mode": "manual_parallel",
+      "cycles": [
+        881,
+        571
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7230,
+            "end": 7361,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7599,
+            "end": 7677,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17521,
+            "end": 17603,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17788,
+            "end": 17866,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "901",
+      "mode": "sequential",
+      "cycles": [
+        879,
+        572
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7283,
+            "end": 7414,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7650,
+            "end": 7728,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17569,
+            "end": 17651,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17836,
+            "end": 17914,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "902",
+      "mode": "act",
+      "cycles": [
+        878,
+        574
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7276,
+            "end": 7405,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 7641,
+            "end": 7719,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17564,
+            "end": 17646,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 17832,
+            "end": 17910,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "902",
+      "mode": "manual_parallel",
+      "cycles": [
+        881,
+        571
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7230,
+            "end": 7361,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7599,
+            "end": 7677,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17521,
+            "end": 17603,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17788,
+            "end": 17866,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "902",
+      "mode": "sequential",
+      "cycles": [
+        879,
+        572
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7283,
+            "end": 7414,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7650,
+            "end": 7728,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17569,
+            "end": 17651,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17836,
+            "end": 17914,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "903",
+      "mode": "act",
+      "cycles": [
+        878,
+        574
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7276,
+            "end": 7405,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 7641,
+            "end": 7719,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17564,
+            "end": 17646,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 17832,
+            "end": 17910,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "903",
+      "mode": "manual_parallel",
+      "cycles": [
+        881,
+        571
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7230,
+            "end": 7361,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7599,
+            "end": 7677,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17521,
+            "end": 17603,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17788,
+            "end": 17866,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "903",
+      "mode": "sequential",
+      "cycles": [
+        879,
+        572
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7283,
+            "end": 7414,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7650,
+            "end": 7728,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17569,
+            "end": 17651,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17836,
+            "end": 17914,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "904",
+      "mode": "act",
+      "cycles": [
+        878,
+        574
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7276,
+            "end": 7405,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 7641,
+            "end": 7719,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17564,
+            "end": 17646,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 17832,
+            "end": 17910,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "904",
+      "mode": "manual_parallel",
+      "cycles": [
+        881,
+        571
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7230,
+            "end": 7361,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7599,
+            "end": 7677,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17521,
+            "end": 17603,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17788,
+            "end": 17866,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "904",
+      "mode": "sequential",
+      "cycles": [
+        879,
+        572
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7283,
+            "end": 7414,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7650,
+            "end": 7728,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17569,
+            "end": 17651,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17836,
+            "end": 17914,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "identity",
+      "mode": "act",
+      "cycles": [
+        882,
+        573
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7284,
+            "end": 7415,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 7653,
+            "end": 7731,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17573,
+            "end": 17655,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 17840,
+            "end": 17918,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "identity",
+      "mode": "manual_parallel",
+      "cycles": [
+        881,
+        571
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7230,
+            "end": 7361,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7599,
+            "end": 7677,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17521,
+            "end": 17603,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17788,
+            "end": 17866,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "identity",
+      "mode": "sequential",
+      "cycles": [
+        881,
+        571
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7230,
+            "end": 7361,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7599,
+            "end": 7677,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17521,
+            "end": 17603,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17788,
+            "end": 17866,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "zero",
+      "mode": "act",
+      "cycles": [
+        878,
+        574
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7276,
+            "end": 7405,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 7641,
+            "end": 7719,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17564,
+            "end": 17646,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 17832,
+            "end": 17910,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "zero",
+      "mode": "manual_parallel",
+      "cycles": [
+        881,
+        571
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7230,
+            "end": 7361,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7599,
+            "end": 7677,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17521,
+            "end": 17603,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17788,
+            "end": 17866,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "dependent_gemm",
+      "dataset": "zero",
+      "mode": "sequential",
+      "cycles": [
+        879,
+        572
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 7283,
+            "end": 7414,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 7650,
+            "end": 7728,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17569,
+            "end": 17651,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 17836,
+            "end": 17914,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "901",
+      "mode": "act",
+      "cycles": [
+        1734,
+        1110
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        287,
+        240
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17908,
+            "end": 18037,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18360,
+            "end": 18438,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18911,
+            "end": 18991,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48173,
+            "end": 48255,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48469,
+            "end": 48547,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48872,
+            "end": 48952,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "901",
+      "mode": "manual_parallel",
+      "cycles": [
+        1807,
+        1027
+      ],
+      "double_gemm_count": 2,
+      "compute_service_cycles": [
+        164,
+        164
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 17971,
+            "end": 18055,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18822,
+            "end": 18902,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 47975,
+            "end": 48059,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48481,
+            "end": 48561,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 60
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "901",
+      "mode": "sequential",
+      "cycles": [
+        1916,
+        1192
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        316,
+        316
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 18106,
+            "end": 18188,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 18193,
+            "end": 18271,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18963,
+            "end": 19041,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 19046,
+            "end": 19124,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48365,
+            "end": 48447,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 48452,
+            "end": 48530,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48962,
+            "end": 49040,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 49045,
+            "end": 49123,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "902",
+      "mode": "act",
+      "cycles": [
+        1734,
+        1110
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        287,
+        240
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17908,
+            "end": 18037,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18360,
+            "end": 18438,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18911,
+            "end": 18991,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48173,
+            "end": 48255,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48469,
+            "end": 48547,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48872,
+            "end": 48952,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "902",
+      "mode": "manual_parallel",
+      "cycles": [
+        1807,
+        1027
+      ],
+      "double_gemm_count": 2,
+      "compute_service_cycles": [
+        164,
+        164
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 17971,
+            "end": 18055,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18822,
+            "end": 18902,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 47975,
+            "end": 48059,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48481,
+            "end": 48561,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 60
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "902",
+      "mode": "sequential",
+      "cycles": [
+        1916,
+        1192
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        316,
+        316
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 18106,
+            "end": 18188,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 18193,
+            "end": 18271,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18963,
+            "end": 19041,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 19046,
+            "end": 19124,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48365,
+            "end": 48447,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 48452,
+            "end": 48530,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48962,
+            "end": 49040,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 49045,
+            "end": 49123,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "903",
+      "mode": "act",
+      "cycles": [
+        1734,
+        1110
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        287,
+        240
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17908,
+            "end": 18037,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18360,
+            "end": 18438,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18911,
+            "end": 18991,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48173,
+            "end": 48255,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48469,
+            "end": 48547,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48872,
+            "end": 48952,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 28
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "903",
+      "mode": "manual_parallel",
+      "cycles": [
+        1807,
+        1027
+      ],
+      "double_gemm_count": 2,
+      "compute_service_cycles": [
+        164,
+        164
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 17971,
+            "end": 18055,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18822,
+            "end": 18902,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 47975,
+            "end": 48059,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48481,
+            "end": 48561,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 58
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "903",
+      "mode": "sequential",
+      "cycles": [
+        1916,
+        1192
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        316,
+        316
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 18106,
+            "end": 18188,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 18193,
+            "end": 18271,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18963,
+            "end": 19041,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 19046,
+            "end": 19124,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48365,
+            "end": 48447,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 48452,
+            "end": 48530,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48962,
+            "end": 49040,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 49045,
+            "end": 49123,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "904",
+      "mode": "act",
+      "cycles": [
+        1734,
+        1110
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        287,
+        240
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17908,
+            "end": 18037,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18360,
+            "end": 18438,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18911,
+            "end": 18991,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48173,
+            "end": 48255,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48469,
+            "end": 48547,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48872,
+            "end": 48952,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "904",
+      "mode": "manual_parallel",
+      "cycles": [
+        1807,
+        1027
+      ],
+      "double_gemm_count": 2,
+      "compute_service_cycles": [
+        164,
+        164
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 17971,
+            "end": 18055,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18822,
+            "end": 18902,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 47975,
+            "end": 48059,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48481,
+            "end": 48561,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 60
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "904",
+      "mode": "sequential",
+      "cycles": [
+        1916,
+        1192
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        316,
+        316
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 18106,
+            "end": 18188,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 18193,
+            "end": 18271,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18963,
+            "end": 19041,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 19046,
+            "end": 19124,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48365,
+            "end": 48447,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 48452,
+            "end": 48530,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48962,
+            "end": 49040,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 49045,
+            "end": 49123,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "identity",
+      "mode": "act",
+      "cycles": [
+        1734,
+        1110
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        287,
+        240
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17908,
+            "end": 18037,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18360,
+            "end": 18438,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18911,
+            "end": 18991,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48173,
+            "end": 48255,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48469,
+            "end": 48547,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48872,
+            "end": 48952,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "identity",
+      "mode": "manual_parallel",
+      "cycles": [
+        1795,
+        1015
+      ],
+      "double_gemm_count": 2,
+      "compute_service_cycles": [
+        164,
+        164
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 17920,
+            "end": 18004,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 18770,
+            "end": 18850,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 47934,
+            "end": 48018,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 48442,
+            "end": 48522,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "identity",
+      "mode": "sequential",
+      "cycles": [
+        1971,
+        1189
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        316,
+        316
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 17971,
+            "end": 18053,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 18058,
+            "end": 18136,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18903,
+            "end": 18981,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 18986,
+            "end": 19064,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 48139,
+            "end": 48221,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 48226,
+            "end": 48304,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 48727,
+            "end": 48805,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 48810,
+            "end": 48888,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "zero",
+      "mode": "act",
+      "cycles": [
+        1829,
+        1111
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        287,
+        240
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 18070,
+            "end": 18199,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 18556,
+            "end": 18634,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 19156,
+            "end": 19236,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 46204,
+            "end": 46286,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 46500,
+            "end": 46578,
+            "cycles": 78
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 46909,
+            "end": 46989,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "zero",
+      "mode": "manual_parallel",
+      "cycles": [
+        1850,
+        1023
+      ],
+      "double_gemm_count": 2,
+      "compute_service_cycles": [
+        164,
+        164
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 18322,
+            "end": 18406,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 19177,
+            "end": 19257,
+            "cycles": 80
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 46412,
+            "end": 46496,
+            "cycles": 84
+          },
+          {
+            "instruction": "double_gemm",
+            "begin": 46928,
+            "end": 47008,
+            "cycles": 80
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "four_gemm",
+      "dataset": "zero",
+      "mode": "sequential",
+      "cycles": [
+        2012,
+        1186
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        316,
+        316
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 18322,
+            "end": 18404,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 18409,
+            "end": 18487,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 19258,
+            "end": 19336,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 19341,
+            "end": 19419,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 46572,
+            "end": 46654,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 46659,
+            "end": 46737,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 47169,
+            "end": 47247,
+            "cycles": 78
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 47252,
+            "end": 47330,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "901",
+      "mode": "act",
+      "cycles": [
+        959,
+        546
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9855,
+            "end": 9984,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 10268,
+            "end": 10346,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23257,
+            "end": 23339,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 23501,
+            "end": 23579,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "901",
+      "mode": "manual_parallel",
+      "cycles": [
+        877,
+        509
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 9788,
+            "end": 9872,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 23030,
+            "end": 23114,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "901",
+      "mode": "sequential",
+      "cycles": [
+        1007,
+        590
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9788,
+            "end": 9870,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 9875,
+            "end": 9953,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23168,
+            "end": 23250,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 23255,
+            "end": 23333,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "902",
+      "mode": "act",
+      "cycles": [
+        959,
+        546
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9855,
+            "end": 9984,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 10268,
+            "end": 10346,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23257,
+            "end": 23339,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 23501,
+            "end": 23579,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "902",
+      "mode": "manual_parallel",
+      "cycles": [
+        877,
+        509
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 9788,
+            "end": 9872,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 23030,
+            "end": 23114,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "902",
+      "mode": "sequential",
+      "cycles": [
+        1007,
+        590
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9788,
+            "end": 9870,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 9875,
+            "end": 9953,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23168,
+            "end": 23250,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 23255,
+            "end": 23333,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "903",
+      "mode": "act",
+      "cycles": [
+        959,
+        546
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9855,
+            "end": 9984,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 10268,
+            "end": 10346,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23257,
+            "end": 23339,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 23501,
+            "end": 23579,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "903",
+      "mode": "manual_parallel",
+      "cycles": [
+        877,
+        509
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 9788,
+            "end": 9872,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 23030,
+            "end": 23114,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 28
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "903",
+      "mode": "sequential",
+      "cycles": [
+        1007,
+        590
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9788,
+            "end": 9870,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 9875,
+            "end": 9953,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23168,
+            "end": 23250,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 23255,
+            "end": 23333,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "904",
+      "mode": "act",
+      "cycles": [
+        959,
+        546
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9855,
+            "end": 9984,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 10268,
+            "end": 10346,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23257,
+            "end": 23339,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 23501,
+            "end": 23579,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "904",
+      "mode": "manual_parallel",
+      "cycles": [
+        877,
+        509
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 9788,
+            "end": 9872,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 23030,
+            "end": 23114,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "904",
+      "mode": "sequential",
+      "cycles": [
+        1007,
+        590
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9788,
+            "end": 9870,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 9875,
+            "end": 9953,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23168,
+            "end": 23250,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 23255,
+            "end": 23333,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "identity",
+      "mode": "act",
+      "cycles": [
+        959,
+        544
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        207,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9663,
+            "end": 9792,
+            "cycles": 129
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 10076,
+            "end": 10154,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23074,
+            "end": 23156,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 23317,
+            "end": 23395,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "identity",
+      "mode": "manual_parallel",
+      "cycles": [
+        878,
+        508
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 9832,
+            "end": 9916,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 23081,
+            "end": 23165,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "identity",
+      "mode": "sequential",
+      "cycles": [
+        1007,
+        590
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9788,
+            "end": 9870,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 9875,
+            "end": 9953,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 23168,
+            "end": 23250,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 23255,
+            "end": 23333,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "zero",
+      "mode": "act",
+      "cycles": [
+        932,
+        546
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        209,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9701,
+            "end": 9832,
+            "cycles": 131
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 10086,
+            "end": 10164,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 22321,
+            "end": 22403,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_0",
+            "begin": 22565,
+            "end": 22643,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "zero",
+      "mode": "manual_parallel",
+      "cycles": [
+        848,
+        513
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 9774,
+            "end": 9858,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 22309,
+            "end": 22393,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "shared_input",
+      "dataset": "zero",
+      "mode": "sequential",
+      "cycles": [
+        975,
+        593
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 9724,
+            "end": 9806,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 9811,
+            "end": 9889,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 22407,
+            "end": 22489,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 22494,
+            "end": 22572,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "901",
+      "mode": "act",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10697,
+            "end": 10781,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25767,
+            "end": 25851,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "901",
+      "mode": "manual_parallel",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10706,
+            "end": 10790,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25779,
+            "end": 25863,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "901",
+      "mode": "sequential",
+      "cycles": [
+        1089,
+        592
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 10702,
+            "end": 10784,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 10789,
+            "end": 10867,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 25911,
+            "end": 25993,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 25998,
+            "end": 26076,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "902",
+      "mode": "act",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10697,
+            "end": 10781,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25767,
+            "end": 25851,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "902",
+      "mode": "manual_parallel",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10706,
+            "end": 10790,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25779,
+            "end": 25863,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "902",
+      "mode": "sequential",
+      "cycles": [
+        1089,
+        592
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 10702,
+            "end": 10784,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 10789,
+            "end": 10867,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 25911,
+            "end": 25993,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 25998,
+            "end": 26076,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "903",
+      "mode": "act",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10697,
+            "end": 10781,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25767,
+            "end": 25851,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "903",
+      "mode": "manual_parallel",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10706,
+            "end": 10790,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25779,
+            "end": 25863,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "903",
+      "mode": "sequential",
+      "cycles": [
+        1089,
+        592
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 10702,
+            "end": 10784,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 10789,
+            "end": 10867,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 25911,
+            "end": 25993,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 25998,
+            "end": 26076,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "904",
+      "mode": "act",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10697,
+            "end": 10781,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25767,
+            "end": 25851,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "904",
+      "mode": "manual_parallel",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10706,
+            "end": 10790,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25779,
+            "end": 25863,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 30
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "904",
+      "mode": "sequential",
+      "cycles": [
+        1089,
+        592
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 10702,
+            "end": 10784,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 10789,
+            "end": 10867,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 25911,
+            "end": 25993,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 25998,
+            "end": 26076,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "identity",
+      "mode": "act",
+      "cycles": [
+        1008,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10702,
+            "end": 10786,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25773,
+            "end": 25857,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "identity",
+      "mode": "manual_parallel",
+      "cycles": [
+        1005,
+        511
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10628,
+            "end": 10712,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 25761,
+            "end": 25845,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "identity",
+      "mode": "sequential",
+      "cycles": [
+        1088,
+        591
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 10706,
+            "end": 10788,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 10793,
+            "end": 10871,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 25931,
+            "end": 26013,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 26018,
+            "end": 26096,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "zero",
+      "mode": "act",
+      "cycles": [
+        989,
+        522
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10543,
+            "end": 10627,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 24982,
+            "end": 25066,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "zero",
+      "mode": "manual_parallel",
+      "cycles": [
+        989,
+        522
+      ],
+      "double_gemm_count": 1,
+      "compute_service_cycles": [
+        84,
+        84
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 10548,
+            "end": 10632,
+            "cycles": 84
+          }
+        ],
+        [
+          {
+            "instruction": "double_gemm",
+            "begin": 24988,
+            "end": 25072,
+            "cycles": 84
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    },
+    {
+      "workload": "two_gemm",
+      "dataset": "zero",
+      "mode": "sequential",
+      "cycles": [
+        1070,
+        602
+      ],
+      "double_gemm_count": 0,
+      "compute_service_cycles": [
+        160,
+        160
+      ],
+      "compute_service_windows": [
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 10543,
+            "end": 10625,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 10630,
+            "end": 10708,
+            "cycles": 78
+          }
+        ],
+        [
+          {
+            "instruction": "gemm_0",
+            "begin": 25123,
+            "end": 25205,
+            "cycles": 82
+          },
+          {
+            "instruction": "gemm_1",
+            "begin": 25210,
+            "end": 25288,
+            "cycles": 78
+          }
+        ]
+      ],
+      "pe00_nonzero_overlap_cycles": 0
+    }
+  ],
+  "measurement": "First invocation and repeated-after-verification invocation, separate cycle values.",
+  "compute_measurement": "Sum of per-GEMM command-acceptance-to-completion windows in the same RTL trace; excludes data transfers and gaps between macros. Not end-to-end latency."
+}
