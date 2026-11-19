@@ -4,12 +4,12 @@ ACT PLDI 튜토리얼처럼 **ISA Python 실행 → 생성된 backend로 HLO 컴
 순서로 사용한다. QKV는 기존 단일 출력 ACT를, DoubleGEMM은 다중 출력 확장을 살펴보는 예제다.
 Linux·Conda 환경을 사용하며 Oracle은 CPU에서 실행한다.
 
-**인수인계:** [연구 흐름·현재 상태·한계](handoff/README.md) · [공유용 PDF](handoff/ACT-handoff.pdf)
+**인수인계:** [연구 목표·수정 흐름·실험 결과·한계·패치 안내](handoff/README.md)
 
 ## 현재 상태
 
 다중 결과 지원과 세 검색 구현의 비교를 마무리하고, 코드·실험·측정 자료를 `main`에 통합했다.
-인계 기준은 `handoff-20261118` 태그다. 이 시점에 `multi-result`, `multipattern`,
+다중 결과·검색 비교의 코드 기준은 `handoff-20261118` 태그다. 이 시점에 `multi-result`, `multipattern`,
 `multipattern-rewrite`의 전체 회귀 검사 각 10개 그룹을 통과했다. 각 구성에는
 Python 생성기 검사 52개와 실제 compiler·Oracle·Rust 검사가 포함된다.
 기본 실행 구성은 QKV=`baseline`, DoubleGEMM=`multi-result`다.
@@ -353,81 +353,40 @@ scripts/
   test.sh              회귀 테스트 실행
   _internal/           위 명령이 사용하는 공통 코드·설치 보조 도구
 tests/                 Python·Rust 회귀 테스트와 테스트 전용 HLO
-handoff/               인계 본문·공유용 PDF·참고 자료 안내
+handoff/               연구 인계 본문과 자료 링크
 build/                 생성된 소스·compiler·assembly·검증 결과; Git 제외
 ```
 
 로컬 보고서와 그림을 보관하는 `docs/`도 Git에서 제외한다. 위 실행 경로는 이 디렉터리의
 파일을 사용하지 않는다.
 
-패치의 하위 폴더는 **실제 수정할 upstream 저장소**를 뜻하고, 번호는 그 저장소 안의 적용 순서다.
-명세를 읽는 첫 단계는 세 저장소에 걸쳐 있으므로 각각 `0001`이 있다. 역할을 구분할 수 있도록
-파일명도 아래처럼 나눴다.
+패치 폴더별 목적과 적용 관계는 [인수인계의 패치 안내](handoff/README.md#5-패치-폴더는-각각-무엇인가)에 있다.
+개별 파일의 역할·수정 위치는 각 폴더에서 읽는다.
 
-| 패치 | 수정하는 코드와 역할 |
+| 패치 폴더 | 파일별 설명 |
 | --- | --- |
-| [TAIDL 0001 — semantic-interface](patches/multi-result/taidl/0001-semantic-interface.patch) | tuple 반환 문법과 `semantic_interface()`. `parameter(index)`로 입력 순서, ROOT tuple로 결과 순서를 읽고 개수·타입을 확인한다. |
-| [Backend 0001 — isa-rewrites](patches/multi-result/act-backend/0001-isa-rewrites.patch) | 그 입출력 해석을 받아 `lower_semantics()`로 계산식을 읽고, IR→ISA 규칙·타입/shape 검사·외부 입력 검사를 생성한다. |
-| [Oracle 0001 — isa-codegen](patches/multi-result/act-oracle/0001-isa-codegen.patch) | 같은 입출력 해석을 받아 `generate_inputs()`·`generate_outputs()`가 Oracle의 읽기·결과 저장 코드를 생성한다. |
+| [baseline](patches/baseline/README.md) | 모든 구성의 공통 실행·정확성 수정 4개 |
+| [multi-result](patches/multi-result/README.md) | 현재 다중 결과 처리 10개: 명세 → 후보 → 추출 → 할당 → Oracle |
+| [multi-result-legacy](patches/multi-result-legacy/README.md) | 이전 Gemmini용 구현 12개. 현재 다중 결과 구현과 별도 적용 |
+| [multipattern](patches/multipattern/README.md) | 공동 검색과 검색 한도·배분 수정 2개 |
+| [multipattern-rewrite](patches/multipattern-rewrite/README.md) | 공동 검색·검사·적용을 rewrite로 연결하는 수정 1개 |
 
-입출력 순서를 정하는 함수는 TAIDL에 한 번 정의하며 Backend와 Oracle이 함께 호출한다.
-Backend는 **어떤 계산을 ISA로 바꿀 수 있는지**, Oracle은 **그 ISA를 실행했을 때 어떤 값이
-나오는지**를 담당하므로 두 생성기의 출력물은 서로 다르다.
+### 패치가 적용된 소스 읽기와 수정
 
-다중 출력 Backend의 7개 패치는 다음 흐름으로 이어진다.
+패치는 변경분이므로 전체 실행 흐름을 읽으려면 적용된 소스를 함께 본다.
+다음 명령은 compiler를 빌드하지 않고 고정 upstream 복사본에 선택한 패치를 적용한다.
 
-| 단계 | 패치 | 책임과 주요 코드 |
-| --- | --- | --- |
-| ISA 규칙 준비 | [0001-isa-rewrites](patches/multi-result/act-backend/0001-isa-rewrites.patch) | `semantics.py`, rewrite 생성기, `applier.rs`, `joint.rs`. 규칙에 필요한 `TensorOp` tuple/GTE와 tensor 정보 처리도 포함한다. |
-| HLO 입력 처리 | [0002-hlo-tuples](patches/multi-result/act-backend/0002-hlo-tuples.patch) | `initializer/`, `ir/value.rs`, `metadata.rs`. HLO tuple/GTE를 읽고 프로그램의 입력·반환 구조와 HBM 위치를 만든다. |
-| ISA 후보 발견 | [0003-isa-candidates](patches/multi-result/act-backend/0003-isa-candidates.patch) | `discovery.rs`와 Runner hook. 결과별 매칭을 다시 찾아 적합한 조합에 tuple/GTE를 추가한다. ISA 노드는 0001의 rewrite로 추가한다. |
-| PII 표현 | [0004-pii-model](patches/multi-result/act-backend/0004-pii-model.patch) | `BufferSignature`, `ValueRef`, `PiiResult`, `PiiGraph`. 명령어 하나의 여러 결과, 소비자의 결과 참조, 프로그램 출력을 기록한다. |
-| PII 추출 | [0005-pii-extraction](patches/multi-result/act-backend/0005-pii-extraction.patch) | `extractor/fast.rs`, `slow.rs`, `utils.rs`. 요구한 값의 생산자·결과를 선택하고, 재사용과 실패 시 복구를 처리한다. |
-| PII → assembly | [0006-pii-to-assembly](patches/multi-result/act-backend/0006-pii-to-assembly.patch) | C++ parser·Instruction/Tensor·scheduler·allocator·emitter와 생성기. 결과별 주소·수명을 계산해 호출문과 할당 기록을 쓴다. |
-| 최종 후보 선택 | [0007-candidate-evaluation](patches/multi-result/act-backend/0007-candidate-evaluation.patch) | `pipeline.rs`의 종료 판단. 받은 PII batch에 미평가 후보가 있으면 ‘개선 없음’ 중단을 보류하며 전체 시간 제한은 유지한다. |
-
-실험 구성의 [Backend 0001 — direct-discovery](patches/multipattern/act-backend/0001-direct-discovery.patch)는
-위 7개 패치 다음에 적용하며 `discovery.rs`의 검색 부분을 바꾼다. 연산자마다 새 child 변수를 둔
-얕은 패턴과 입력 동등성 조건으로 공동 검색을 구성해, metadata wildcard를 보존한다.
-기본 `multi-result`는 이 패치를 적용하지 않는다.
-
-Oracle의 [0002-hlo-tuples](patches/multi-result/act-oracle/0002-hlo-tuples.patch)는 생성된 kernel의
-입력 tuple을 tensor 목록으로 펼치고 결과를 원래 tuple 구조로 복원한다. ISA 한 명령어의 결과
-port 순서를 다루는 Oracle 0001과 구분한다.
-
-```mermaid
-flowchart TD
-    ISA["ISA Python 명세"] --> T["TAIDL 0001: 입출력 해석"]
-    T --> B["Backend 0001: rewrite·검사 코드 생성"]
-    T --> O["Oracle 0001: ISA 실행 코드 생성"]
-    H["HLO workload"] --> I["Backend 0002: e-graph·입출력 metadata"]
-    I --> R["Backend 0003 + 0001: 후보 발견·ISA rewrite"]
-    B --> R
-    R --> P["Backend 0004 + 0005: PII 구조·추출"]
-    P --> C["Backend 0006: 파싱 → 스케줄 → 주소 할당 → assembly"]
-    C --> E["Backend 0007: 후보 평가·최종 assembly 선택"]
-    E --> V["verify.py: Oracle 결과와 HLO 결과 비교"]
-    O --> V
+```bash
+python scripts/prepare_sources.py multi-result
+# 결과: build/multi-result/src/{act,taidl,act-backend,act-oracle}/
 ```
 
-패치 경계는 각 기능이 다음 단계에 넘기는 정보를 기준으로 정했다. `pipeline.rs`는 여러 단계를
-연결하므로 여러 패치가 수정한다. 0002는 입출력 metadata, 0003은 발견 hook, 0005는 추출기의
-입력 인자, 0006은 C++ 호출·산출물 전달, 0007은 종료 조건을 바꾼다.
-
-0001의 `initializer` 수정은 생성한 의미 검사와 workload의 연산 정보를 맞추기 위한 것이다.
-scalar의 빈 shape, broadcast의 `dimensions`, multiply의 IR 처리가 여기에 포함된다.
-HLO의 중첩 tuple·프로그램 입출력 구조를 읽는 기능은 0002에 둔다. Oracle 0001에도 명세 본문의
-concatenate와 scalar를 실행 코드로 만드는 수정이 포함된다.
-
-0004의 fast/slow 수정은 새 자료구조를 기존 단일 출력 추출기에 연결하는 부분이다.
-다중 결과를 따라가는 탐색은 0005에 있다. 0004에서 넣은 임시 차단은 아직 구형인 C++ allocator에
-다중 출력 PII를 넘기지 않도록 하며, C++ 지원을 완성하는 0006이 제거한다.
-0006은 PII의 여러 결과를 C++에서 읽어 assembly까지 보존하는 범위여서 parser·scheduler·emitter도
-함께 수정한다.
-
-공통 외부 입력 검사는 0001의 `joint.rs`에 정의하고 0003도 그 구현을 호출한다. 후보를 처음 찾을 때의
-선별과 실제 ISA rewrite가 매칭한 조합의 검사는 각각 수행한다. e-graph가 바뀌거나 workload에서
-tuple이 직접 들어오는 경우에도 현재 매칭을 확인해야 하기 때문이다.
+예를 들어 공동 후보 발견 구현은
+`build/multi-result/src/act-backend/act_backend/generic/src/isel/discovery.rs`에 있다.
+다른 구성을 볼 때는 명령과 경로의 `multi-result`를 해당 구성 이름으로 바꾼다.
+`third_party/`는 고정 원본이므로, 이어갈 변경은 `patches/`에 보존한다.
+패치의 하위 폴더는 수정 대상 upstream이고, 번호는 그 저장소 안의 적용 순서다.
+새 패치 파일을 추가하면 해당 묶음의 `series`에도 등록한다.
 
 각 구성의 `series`에 적용할 파일과 저장소별 순서를 적는다.
 소스 준비 스크립트는 해당 upstream 복사본에만 그 패치를 적용한다.
