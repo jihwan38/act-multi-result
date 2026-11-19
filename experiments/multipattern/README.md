@@ -1,5 +1,13 @@
 # MultiPattern experiments
 
+The three-way comparison was completed on 2026-10-26. [REPORT.md](REPORT.md)
+records the results, limitations and tags for the measured implementation commits.
+Both MultiPattern implementations remain optional toolchains on `main`; the
+comparison did not establish an overall performance advantage over `multi-result`.
+[PLAN.md](PLAN.md) and [STAGE1.md](STAGE1.md) preserve the original plan and
+intermediate checkpoint. Runs from the current checkout record their current
+source fingerprint; keep them separate from the archived measurements.
+
 `ProbeISA.py` declares a small generated accelerator whose joint instructions
 share real input variables. The same Python declaration, HLO inputs, Oracle
 checks, and cost model are used for each selected toolchain.

@@ -1,5 +1,10 @@
 # Discovery checkpoint
 
+Historical checkpoint at `05692e4`, preserved by the tag
+`comparison-20261026-multipattern`. The subsequent direct-rewrite implementation
+and completed three-way comparison are recorded in [REPORT.md](REPORT.md).
+The validation counts and workspace paths below describe this checkpoint.
+
 The first implementation checkpoint keeps the generated tuple-based ISA rewrite
 path and changes only the optional `multipattern` discovery configuration.
 `main`'s baseline and multi-result patches remain byte-for-byte unchanged.

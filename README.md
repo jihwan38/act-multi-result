@@ -4,6 +4,26 @@ ACT PLDI 튜토리얼처럼 **ISA Python 실행 → 생성된 backend로 HLO 컴
 순서로 사용한다. QKV는 기존 단일 출력 ACT를, DoubleGEMM은 다중 출력 확장을 살펴보는 예제다.
 Linux·Conda 환경을 사용하며 Oracle은 CPU에서 실행한다.
 
+## 현재 상태
+
+다중 결과 지원과 세 검색 구현의 비교를 마무리하고, 코드·실험·측정 자료를 `main`에 통합했다.
+인계 기준은 `handoff-20261118` 태그다. 이 시점에 `multi-result`, `multipattern`,
+`multipattern-rewrite`의 전체 회귀 검사 각 10개 그룹을 통과했다. 각 구성에는
+Python 생성기 검사 52개와 실제 compiler·Oracle·Rust 검사가 포함된다.
+기본 실행 구성은 QKV=`baseline`, DoubleGEMM=`multi-result`다.
+`multipattern`과 `multipattern-rewrite`는 `--toolchain`으로 선택하는 실험 구성으로 유지한다.
+2026-10-26 비교에서는 전반적인 성능 우위를 확인하지 못했다.
+[최종 비교 보고서](experiments/multipattern/REPORT.md)에 결론·한계·원시 측정 자료와
+측정 기준 커밋을 보존한 태그를 정리했다. [실험 실행법](experiments/multipattern/README.md)은
+세 구성을 같은 입력으로 비교하는 방법을 설명한다.
+
+Gemmini 이식과 공개 artifact 호환은 후속 작업이다.
+[기존 Dual Gemmini 실험](https://github.com/jihwan38/act-parallelism/tree/main/experiments/05_dual_gemmini)은
+별도 저장소에 있으며 현재 `cases/`에는 통합하지 않았다. 이식 시에는 현재 ROOT tuple 문법을
+사용하고, 상수·`minimum`·`maximum` 지원을 옮겨야 한다. 공개 artifact 전체 명세를 가져오려면
+`set_inplace`, 상수에서 읽는 `scale`, 가변 크기·2차원 주소 처리도 맞춰야 한다.
+정수 타입의 Rust 이름을 잘못 생성하던 `S8/S32` 오류는 `I8/I32`로 수정했다.
+
 ## 1. 설치와 ACT 소스 준비
 
 ```bash

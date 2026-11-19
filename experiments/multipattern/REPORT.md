@@ -8,16 +8,23 @@
 
 ## 비교한 구현
 
-| 브랜치 | 측정한 구현 커밋 | 실행 구성 |
-| --- | --- | --- |
-| `main` | `10f059e` | `multi-result` |
-| `experiment/multipattern-discovery` | `05692e4` | `multipattern` |
-| `experiment/multipattern-rewrite` | `3b85d5d` | `multipattern-rewrite` |
+이 보고서의 `main`은 **측정 당시 기준 구현 `10f059e`**를 뜻한다.
+인계 정리 이후의 최신 `main`에는 세 실행 구성과 비교 자료가 모두 포함된다.
+
+| 측정 당시 브랜치 | 측정한 구현 커밋 | 보존 태그 | 실행 구성 |
+| --- | --- | --- | --- |
+| `main` | `10f059e` | `comparison-20261026-multi-result` | `multi-result` |
+| `experiment/multipattern-discovery` | `05692e4` | `comparison-20261026-multipattern` | `multipattern` |
+| `experiment/multipattern-rewrite` | `3b85d5d` | `comparison-20261026-multipattern-rewrite` | `multipattern-rewrite` |
 
 순서대로 기존 discovery를 보강하고 검증·커밋한 뒤, 그 상태에서 직접 rewrite 브랜치를
-만들었다. `main`과 보강한 discovery 브랜치는 그대로 보존했다. 최종 체크아웃에서는
+만들었다. 측정 기준은 위 커밋과 태그로 보존한다. 최종 체크아웃에서는
 `--toolchain`으로 세 구현 모두를 다시 만들 수 있다. 비교 대상은 원래의 무제한에 가까운
 discovery 실험 커밋이 아니라 **보강한 discovery**다.
+
+2026-11-18 인계 정리에는 공통 생성기의 정수 타입 이름을 `S8/S32`에서 `I8/I32`로
+고친 수정과 회귀 검사가 포함된다. 이 수정은 측정 이후의 변경이며, 아래 측정값과 당시
+검증 개수·source fingerprint는 원래 기록을 유지한다.
 
 빌드는 구현을 커밋하기 전에 동결했으므로 원본 manifest의 `repository_commit`은 당시의
 부모 커밋이다. 이를 최종 구현 커밋으로 덮어쓰지 않았다. 대신 모든 적용 패치의 SHA-256이

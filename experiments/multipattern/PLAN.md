@@ -1,5 +1,11 @@
 # Multi-result matching experiment
 
+Historical plan for the comparison completed on 2026-10-26. See
+[REPORT.md](REPORT.md) for the final results, limitations and tags preserving
+the measured implementation commits. The branch sequence below records the
+experiment's development order. The completed implementations are now selectable
+toolchains on `main`; the default DoubleGEMM toolchain remains `multi-result`.
+
 This repository experiment compares three implementations without changing the
 fixed upstream revisions or the meaning of an ISA declaration.
 
