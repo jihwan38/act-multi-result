@@ -1,0 +1,87 @@
+diff --git a/taidl_to/generic/decorator.py b/taidl_to/generic/decorator.py
+index f2b8362..b0ee5df 100644
+--- a/taidl_to/generic/decorator.py
++++ b/taidl_to/generic/decorator.py
+@@ -64,11 +64,48 @@ def compile_or_load_executable(hlo_str: str):
+     return elapsed
+
+
+-def kernel(hbm: int, input: list, output: list, constant=[]):
++def _validate_value_tree(tree, count):
++    leaves = []
++    def visit(node):
++        if isinstance(node, list):
++            for child in node:
++                visit(child)
++        elif type(node) is int:
++            leaves.append(node)
++        else:
++            raise ValueError("Value tree must contain only lists and integer leaf indices")
++    visit(tree)
++    if leaves != list(range(count)):
++        raise ValueError("Value tree must enumerate ABI leaves exactly once, in order")
++
++
++def _flatten_arguments(tree, value):
++    if type(tree) is int:
++        return [value]
++    if not isinstance(value, (tuple, list)) or len(tree) != len(value):
++        raise ValueError("Argument tuple structure differs from input_tree")
++    return [leaf for child, item in zip(tree, value) for leaf in _flatten_arguments(child, item)]
++
++
++def _restore_value(tree, leaves):
++    if type(tree) is int:
++        return leaves[tree]
++    return tuple(_restore_value(child, leaves) for child in tree)
++
++
++def kernel(hbm: int, input: list, output: list, constant=[], *, input_tree=None, output_tree=None):
++    # Existing fsim callers keep the flat output ABI. fsim-tree additionally
++    # restores the exact logical result, including nested/empty tuples.
++    if input_tree is not None:
++        if not isinstance(input_tree, list):
++            raise ValueError("input_tree must describe a parameter list")
++        _validate_value_tree(input_tree, len(input))
++    if output_tree is not None:
++        _validate_value_tree(output_tree, len(output))
+     def decorator(func):
+         def launchable(mode):
+             def wrapper(f, *args, **kwargs):
+-                if mode != 'fsim':
++                if mode not in ('fsim', 'fsim-tree'):
+                     f()
+
+                 if mode == 'fsim-compile':
+@@ -77,7 +114,7 @@ def kernel(hbm: int, input: list, output: list, constant=[]):
+                 if mode == 'cost':
+                     return api.total_cost
+
+-                if mode == 'fsim':
++                if mode in ('fsim', 'fsim-tree'):
+                     global backend
+                     input_hbm = jnp.zeros(hbm, dtype=jnp.int8)
+
+@@ -86,8 +123,9 @@ def kernel(hbm: int, input: list, output: list, constant=[]):
+                         flat = const_array.flatten().view(jnp.int8)
+                         input_hbm = input_hbm.at[const['addr']: const['addr'] + flat.size].set(flat)
+
+-                    assert len(args) == len(input), "args != input"
+-                    for arg, spec in zip(args, input):
++                    values = args if input_tree is None else _flatten_arguments(input_tree, args)
++                    assert len(values) == len(input), "args != input"
++                    for arg, spec in zip(values, input):
+                         assert arg.shape == spec['shape'], "arg.shape != input.shape"
+                         assert arg.dtype == spec['dtype'], "arg.dtype != input.dtype"
+                         arg_array = jnp.array(arg)
+@@ -111,6 +149,10 @@ def kernel(hbm: int, input: list, output: list, constant=[]):
+                         data = jnp.array(output_hbm[addr:addr + size]).view(dtype).reshape(shape)
+                         outputs.append(jnp.array(data))
+
++                    if mode == 'fsim-tree':
++                        if output_tree is None:
++                            raise ValueError("fsim-tree requires output_tree metadata")
++                        return _restore_value(output_tree, outputs), elapsed
+                     return outputs, elapsed
+
+             api.mode = mode

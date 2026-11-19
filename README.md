@@ -4,7 +4,7 @@ ACT PLDI 튜토리얼처럼 **ISA Python 실행 → 생성된 backend로 HLO 컴
 순서로 사용한다. QKV는 기존 단일 출력 ACT를, DoubleGEMM은 다중 출력 확장을 살펴보는 예제다.
 Linux·Conda 환경을 사용하며 Oracle은 CPU에서 실행한다.
 
-**인수인계:** [연구 요약](handoff/README.md) · [공유용 PDF](handoff/ACT-handoff.pdf) · [자료와 근거](handoff/SOURCES.md)
+**인수인계:** [연구 흐름·현재 상태·한계](handoff/README.md) · [공유용 PDF](handoff/ACT-handoff.pdf)
 
 ## 현재 상태
 
@@ -19,17 +19,18 @@ Python 생성기 검사 52개와 실제 compiler·Oracle·Rust 검사가 포함�
 측정 기준 커밋을 보존한 태그를 정리했다. [실험 실행법](experiments/multipattern/README.md)은
 세 구성을 같은 입력으로 비교하는 방법을 설명한다.
 
-Gemmini 이식과 공개 artifact 호환은 후속 작업이다.
-[기존 Dual Gemmini 실험](https://github.com/jihwan38/act-parallelism/tree/main/experiments/05_dual_gemmini)은
-별도 저장소에 있으며 현재 `cases/`에는 통합하지 않았다. 이식 시에는 현재 ROOT tuple 문법을
-사용하고, 상수·`minimum`·`maximum` 지원을 옮겨야 한다. 공개 artifact 전체 명세를 가져오려면
+이전 Dual Gemmini 실험은 [`cases/gemmini`](cases/gemmini/README.md)에
+`multi-result-legacy` 구성으로 가져왔다. 옛 ACT 패치와 명세를 함께 보존하며,
+`./scripts/run.sh gemmini`로 compiler·Oracle을 확인한다. RTL 준비·실행은 해당 README에 있다.
+현재 `multi-result`로의 이식은 별도 작업으로, ROOT tuple 문법과 상수·`minimum`·`maximum`
+지원을 맞춰야 한다. 공개 artifact 전체 명세를 가져오려면
 `set_inplace`, 상수에서 읽는 `scale`, 가변 크기·2차원 주소 처리도 맞춰야 한다.
 정수 타입의 Rust 이름을 잘못 생성하던 `S8/S32` 오류는 `I8/I32`로 수정했다.
 
 ## 1. 설치와 ACT 소스 준비
 
 ```bash
-git clone --recurse-submodules https://github.com/jihwan38/act-multi-result.git
+git clone https://github.com/jihwan38/act-multi-result.git
 cd act-multi-result
 ./scripts/setup.sh
 
@@ -41,11 +42,12 @@ python scripts/prepare_sources.py baseline
 source scripts/env.sh baseline
 ```
 
-`setup.sh`는 고정 upstream을 내려받고, `act` Conda 환경을 생성하거나 `environment.yml`에 맞춰 갱신하며,
+`setup.sh`는 고정 ACT upstream 4개를 내려받고, `act` Conda 환경을 생성하거나 `environment.yml`에 맞춰 갱신하며,
 ACT Python 패키지와 로컬 OR-Tools를 설치한다. ISA별 compiler는 아직 만들지 않는다.
 NumPy 1.26.4, JAX·jaxlib 0.4.33, ml-dtypes 0.4.1을 고정하고 설치 후 버전과 JAX CPU 초기화를 확인한다.
 OR-Tools에서는 ACT가 사용하는 constraint solver를 빌드하며, 선택적인 SCIP·COIN-OR·HiGHS 연계는 끈다.
 처음 실행할 때는 native 의존성 빌드에 시간이 걸린다.
+Chipyard와 RTL 도구는 Gemmini의 `hardware/setup.sh`를 별도로 실행할 때 준비한다.
 
 환경 이름은 `ACT_ENV_NAME=act-dev ./scripts/setup.sh`, Conda 경로는
 `ACT_CONDA_EXE=/path/to/conda ./scripts/setup.sh`, 빌드 병렬도는 `ACT_BUILD_JOBS=4`로 지정한다.
@@ -170,10 +172,11 @@ source scripts/env.sh multi-result
 | --- | --- | --- |
 | `baseline` | 고정 upstream + `patches/baseline/` | `build/baseline/` |
 | `multi-result` | 같은 upstream + `patches/baseline/` → `patches/multi-result/` | `build/multi-result/` |
+| `multi-result-legacy` | 같은 upstream + `baseline` → 이전 Gemmini용 패치 | `build/multi-result-legacy/` |
 | `multipattern` | `multi-result` 구성 + `patches/multipattern/` | `build/multipattern/` |
 | `multipattern-rewrite` | `multipattern` 구성 + `patches/multipattern-rewrite/` | `build/multipattern-rewrite/` |
 
-`patches/baseline/`은 네 구성 모두에 적용하는 기본 수정이다. native 의존성 경로,
+`patches/baseline/`은 모든 구성에 적용하는 기본 수정이다. native 의존성 경로,
 명시적 HLO ROOT 처리, 선언한 주소 제약 적용, Oracle broadcast를 수정한다.
 수정하지 않은 upstream은 `third_party/`에 보관한다.
 
@@ -333,12 +336,14 @@ python scripts/verify.py \
 cases/
   qkv/                 QKV.py, workloads/attention.hlo
   double_gemm/         QKVDoubleGemm.py, workloads/two_gemm_concat.hlo
+  gemmini/             이전 Dual Gemmini 명세·native·RTL 실행과 검증
 patches/
-  baseline/            기본 수정 패치 + series; 네 구성 모두에 적용
+  baseline/            기본 수정 패치 + series; 모든 구성에 적용
   multi-result/        다중 출력 패치 + series
+  multi-result-legacy/  이전 Gemmini용 ACT 패치 + series; baseline 위에만 적용
   multipattern/        실제 e-graph 공동 검색 실험 패치 + series
   multipattern-rewrite/ 생성된 rewrite의 공동 검색·적용 패치 + series
-third_party/           고정 upstream submodule 4개
+third_party/           ACT upstream 4개 + 선택 설치하는 chipyard
 scripts/
   setup.sh             Conda 환경·ACT 패키지·OR-Tools 설치
   prepare_sources.py   upstream 복사와 패치 적용
@@ -348,7 +353,7 @@ scripts/
   test.sh              회귀 테스트 실행
   _internal/           위 명령이 사용하는 공통 코드·설치 보조 도구
 tests/                 Python·Rust 회귀 테스트와 테스트 전용 HLO
-handoff/               인계 본문·공유용 PDF·자료 안내·검증 요약
+handoff/               인계 본문·공유용 PDF·참고 자료 안내
 build/                 생성된 소스·compiler·assembly·검증 결과; Git 제외
 ```
 
@@ -442,6 +447,7 @@ tuple이 직접 들어오는 경우에도 현재 매칭을 확인해야 하기 �
 ./scripts/run.sh qkv
 ./scripts/run.sh qkv --toolchain multi-result
 ./scripts/run.sh double_gemm
+./scripts/run.sh gemmini  # multi-result-legacy, INT8 16×16, 전용 검증 사용
 
 # ISA Python에서 이미 compiler와 Oracle을 생성했다면 재사용
 ./scripts/run.sh double_gemm --skip-build

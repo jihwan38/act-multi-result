@@ -1,0 +1,12 @@
+diff --git a/act_backend/isel_ir2isa_rewrites_rs_generator.py b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+--- a/act_backend/isel_ir2isa_rewrites_rs_generator.py
++++ b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+@@ -6,7 +6,7 @@
+
+
+ def map_dtype_to_rust(dtype):
+-    mapping = {"s8": "S8", "u8": "U8", "s32": "S32", "u32": "U32",
++    mapping = {"s8": "I8", "u8": "U8", "s32": "I32", "u32": "U32",
+                "f32": "FP32", "bf16": "BF16"}
+     if dtype not in mapping:
+         raise ValueError(f"Unsupported TensorOp dtype: {dtype}")

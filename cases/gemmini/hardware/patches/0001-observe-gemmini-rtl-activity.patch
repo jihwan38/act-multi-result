@@ -1,0 +1,30 @@
+diff --git a/src/main/scala/gemmini/Controller.scala b/src/main/scala/gemmini/Controller.scala
+--- a/src/main/scala/gemmini/Controller.scala
++++ b/src/main/scala/gemmini/Controller.scala
+@@ -329,4 +329,26 @@ class GemminiModule[T <: Data: Arithmetic, U <: Data, V <: Data]
+   // Wire up global RoCC signals
+   io.busy := raw_cmd.valid || loop_conv_unroller_busy || loop_matmul_unroller_busy || reservation_station.io.busy || spad.module.io.busy || unrolled_cmd.valid || loop_cmd.valid || conv_cmd.valid
+
++  // Simulation-only observation; never drives a datapath or handshake input.
++  // A nonzero multiply at PE(0,0) is a conservative activity witness, NOT the
++  // utilization of the entire array. Both engines use the same ungated clock.
++  if (System.getenv("ACT_GEMMINI_TRACE") == "1") {
++    require(!clock_gate, "ACT cycle comparison requires ungated engine clocks")
++    val traceCycle = RegInit(0.U(64.W))
++    traceCycle := traceCycle + 1.U
++    val pe00 = ex_controller.mesh.mesh.mesh(0)(0).tile(0)(0)
++    val peValid = chisel3.util.experimental.BoringUtils.tapAndRead(pe00.io.in_valid)
++    val peA = chisel3.util.experimental.BoringUtils.tapAndRead(pe00.mac_unit.io.in_a)
++    val peB = chisel3.util.experimental.BoringUtils.tapAndRead(pe00.mac_unit.io.in_b)
++    val macNonzero = peValid && (peA.asUInt =/= 0.U) && (peB.asUInt =/= 0.U)
++    val oldBusy = RegNext(io.busy, false.B)
++    val oldMac = RegNext(macNonzero, false.B)
++    when (io.busy =/= oldBusy || macNonzero =/= oldMac) {
++      printf(p"ACT_GEMMINI opcode=${opcodes.opcodes.head.litValue.U} cycle=${traceCycle} busy=${io.busy} mac00_nonzero=${macNonzero}\n")
++    }
++    when (io.cmd.fire) {
++      printf(p"ACT_COMMAND opcode=${opcodes.opcodes.head.litValue.U} cycle=${traceCycle} funct=${io.cmd.bits.inst.funct} rs1=${io.cmd.bits.rs1} rs2=${io.cmd.bits.rs2}\n")
++    }
++  }
++
+   io.interrupt := tlb.io.exp.map(_.interrupt).reduce(_ || _)

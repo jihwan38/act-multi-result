@@ -37,8 +37,9 @@ def build_case(name, toolchain=None, force=False):
     provenance = prepare(toolchain, force)
     env = process_env(toolchain)
     log = ROOT / "build" / toolchain / "logs" / f"{config['target']}-build.log"
-    print(f"Running python {directory / config['isa']}; log: {log}", flush=True)
-    command([sys.executable, directory / config["isa"]], env=env, log=log)
+    generator = directory / config.get("generator", config["isa"])
+    print(f"Running python {generator}; log: {log}", flush=True)
+    command([sys.executable, generator], env=env, log=log)
     target, binary = built_target(config, toolchain)
     print(f"Compiler: {binary}\nGenerated code: {target}", flush=True)
     return target, binary, provenance
@@ -89,7 +90,9 @@ def main():
                 raise RuntimeError("Assembly does not identify its selected PII")
             pii = output / "compiler" / f"{match[1]}.pii"
             shutil.copy2(pii, output / "selected.pii")
-            command([sys.executable, ROOT / "scripts/verify.py",
+            verifier = directory / config["verifier"] if "verifier" in config else ROOT / "scripts/verify.py"
+            verifier_args = ["--target", target.parents[1]] if "verifier" in config else []
+            command([sys.executable, verifier, *verifier_args,
                      "--hlo", hlo, "--assembly", assembly,
                      "--report", output / "verification.json"],
                     env=env, log=output / "verify.log")
@@ -101,7 +104,9 @@ def main():
             raise
         finally:
             write_json(output / "run.json", record)
-        print(f"PASS: {args.case} / {selected}; {verification['datasets']} input sets matched exactly.")
+        datasets = verification["datasets"]
+        count = len(datasets) if isinstance(datasets, list) else datasets
+        print(f"PASS: {args.case} / {selected}; {count} input sets matched exactly.")
         print(f"Assembly: {assembly}\nVerification: {output / 'verification.json'}")
 
 

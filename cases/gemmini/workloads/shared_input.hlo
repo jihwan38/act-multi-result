@@ -1,0 +1,10 @@
+HloModule shared_input, entry_computation_layout={(s8[16,16]{1,0}, s8[16,16]{1,0}, s8[16,16]{1,0})->(s32[16,16]{1,0}, s32[16,16]{1,0})}
+
+ENTRY main {
+  %x = s8[16,16] parameter(0)
+  %w0 = s8[16,16] parameter(1)
+  %w1 = s8[16,16] parameter(2)
+  %y0 = s32[16,16] dot(%x, %w0), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  %y1 = s32[16,16] dot(%x, %w1), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  ROOT %output = (s32[16,16], s32[16,16]) tuple(%y0, %y1)
+}

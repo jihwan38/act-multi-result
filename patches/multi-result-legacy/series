@@ -1,0 +1,13 @@
+# Legacy Gemmini ACT profile; apply after baseline only.
+act-backend/0001-support-tuple-root-frontend.patch
+act-backend/0002-support-get-tuple-element.patch
+act-backend/0003-model-multi-result-instructions.patch
+act-backend/0004-complete-typed-tuple-semantics.patch
+act-backend/0005-discover-multi-result-candidates.patch
+act-backend/0006-support-multi-result-fast-slow.patch
+act-backend/0007-allocate-multiple-results-in-act-cpp.patch
+act-backend/0008-correct-signed-integer-dtype-names.patch
+act-backend/0009-support-integer-saturation-semantics.patch
+act-oracle/0001-support-two-input-concatenate.patch
+act-oracle/0002-preserve-structured-kernel-io.patch
+act-oracle/0003-forward-constant-literals.patch

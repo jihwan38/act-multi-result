@@ -14,6 +14,7 @@ COMPONENTS = ("act", "taidl", "act-backend", "act-oracle")
 TOOLCHAINS = {
     "baseline": ("baseline",),
     "multi-result": ("baseline", "multi-result"),
+    "multi-result-legacy": ("baseline", "multi-result-legacy"),
     "multipattern": ("baseline", "multi-result", "multipattern"),
     "multipattern-rewrite": ("baseline", "multi-result", "multipattern", "multipattern-rewrite"),
 }
@@ -25,6 +26,10 @@ CASES = {
     "double_gemm": {"target": "QKVDoubleGemm", "isa": "QKVDoubleGemm.py",
                     "default_workload": "workloads/two_gemm_concat.hlo", "default_toolchain": "multi-result",
                     "toolchains": ("multi-result", "multipattern", "multipattern-rewrite")},
+    "gemmini": {"target": "GemminiDual", "isa": "GemminiDual.py",
+                "generator": "generate.py", "verifier": "verify.py",
+                "default_workload": "workloads/two_gemm.hlo",
+                "default_toolchain": "multi-result-legacy", "toolchains": ("multi-result-legacy",)},
 }
 
 
@@ -112,7 +117,9 @@ def case_config(name, toolchain=None):
         raise ValueError(f"Case {name} supports: {', '.join(config['toolchains'])}; requested {selected}")
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", config["target"]):
         raise ValueError("Invalid target name")
-    for key in ("isa", "default_workload"):
+    for key in ("isa", "default_workload", "generator", "verifier"):
+        if key not in config:
+            continue
         path = (directory / config[key]).resolve()
         if not path.is_relative_to(directory) or not path.is_file():
             raise ValueError(f"Invalid {key} for {name}")

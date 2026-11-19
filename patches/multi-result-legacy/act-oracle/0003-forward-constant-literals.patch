@@ -1,0 +1,37 @@
+diff --git a/taidl_to/oracle_visitor.py b/taidl_to/oracle_visitor.py
+--- a/taidl_to/oracle_visitor.py
++++ b/taidl_to/oracle_visitor.py
+@@ -11,6 +11,7 @@
+         self.op_to_template = {
++            'constant': 'CONSTANT',
+             'reshape': 'RESHAPE',
+             'convert': 'CONVERT',
+             'copy': 'COPY',
+             'bitcast_convert': 'BITCAST_CONVERT',
+             'exponential': 'EXP',
+@@ -81,6 +81,11 @@
+             "size": f'[{lhs_shape}]'
+         }
+
++        if template_name == 'CONSTANT':
++            if len(operand_names) != 1:
++                raise ValueError("constant requires one literal")
++            mapping["const"] = repr(operand_names[0].strip('`'))
++
+         if template_name in ['RESHAPE', 'CONVERT', 'COPY', 'BITCAST_CONVERT', 'EXP']:
+             if len(operand_names) > 0:
+                 mapping["in"] = f'"{operand_names[0]}"'
+diff --git a/taidl_to/templates/templates.txt b/taidl_to/templates/templates.txt
+--- a/taidl_to/templates/templates.txt
++++ b/taidl_to/templates/templates.txt
+@@ -398,9 +398,8 @@
+
+ ### TEMPLATE: CONSTANT ###
+ lhs_loc, lhs_type = lhs_util(attrs, state, global_counters, lvars, comp_attrs, {{lhs}}, {{type}}, {{size}})
+-simplify = simplify_vals([{{const}}], attrs, state, lvars, comp_attrs)
+-const= simplify[0]
++const = {{const}}
+ line = f"{lhs_loc} = {lhs_type} constant({const})"
+ output.append(line)
+
+ ### TEMPLATE: BROADCAST ###

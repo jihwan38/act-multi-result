@@ -1,0 +1,281 @@
+diff --git a/act_backend/generic/src/ir/egraph.rs b/act_backend/generic/src/ir/egraph.rs
+index e4f64cd..3a54254 100644
+--- a/act_backend/generic/src/ir/egraph.rs
++++ b/act_backend/generic/src/ir/egraph.rs
+@@ -25,6 +25,7 @@ pub enum TensorOp {
+     OpShiftRightLogical([Id; 2]),
+     OpSlice(String, [Id; 1]),
+     OpTuple(Vec<Id>),
++    OpGetTupleElement(usize, [Id; 1]),
+     OpXor([Id; 2]),
+     OpTranspose(String, [Id; 1]),
+     // other
+@@ -54,6 +55,7 @@ impl TensorOp {
+             TensorOp::OpShiftRightLogical(..) => 2,
+             TensorOp::OpSlice(..) => 1,
+             TensorOp::OpTuple(ids) => ids.len(),
++            TensorOp::OpGetTupleElement(..) => 1,
+             TensorOp::OpXor(..) => 2,
+             TensorOp::OpTranspose(..) => 1,
+             TensorOp::DetectedConst(..) => 0,
+@@ -99,6 +101,9 @@ impl Language for TensorOp {
+     }
+
+     fn matches(&self, other: &Self) -> bool {
++        if let (Self::OpGetTupleElement(a, _), Self::OpGetTupleElement(b, _)) = (self, other) {
++            return a == b;
++        }
+         std::mem::discriminant(self) == std::mem::discriminant(other)
+             && self.num_children() == other.num_children()
+     }
+@@ -124,6 +129,7 @@ impl Language for TensorOp {
+             TensorOp::OpShiftRightLogical(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpSlice(_, ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpTuple(ids) => ids.as_slice(),
++            TensorOp::OpGetTupleElement(_, ids) => ids.as_slice(),
+             TensorOp::OpXor(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpTranspose(_, ids) => LanguageChildren::as_slice(ids),
+             TensorOp::DetectedConst(_) => &[],
+@@ -152,6 +158,7 @@ impl Language for TensorOp {
+             TensorOp::OpShiftRightLogical(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpSlice(_, ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpTuple(ids) => ids.as_mut_slice(),
++            TensorOp::OpGetTupleElement(_, ids) => ids.as_mut_slice(),
+             TensorOp::OpXor(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpTranspose(_, ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::DetectedConst(_) => &mut [],
+@@ -268,6 +275,11 @@ impl FromOp for TensorOp {
+                 Ok(TensorOp::OpSlice(data.to_string(), children))
+             }
+             "tuple" => Ok(TensorOp::OpTuple(children)),
++            op if op.starts_with("gte_") && children.len() == 1 => {
++                let index = op[4..].parse::<usize>()
++                    .map_err(|_| FromOpError::new(op, children.clone()))?;
++                Ok(TensorOp::OpGetTupleElement(index, [children[0]]))
++            }
+             op if op == "xor" && <[Id; 2] as LanguageChildren>::can_be_length(children.len()) => {
+                 let children = <[Id; 2] as LanguageChildren>::from_vec(children);
+                 Ok(TensorOp::OpXor(children))
+@@ -307,6 +319,7 @@ impl std::fmt::Display for TensorOp {
+             TensorOp::OpShiftRightLogical(_) => write!(f, "shift_right_logical"),
+             TensorOp::OpSlice(data, _) => write!(f, "slice[slice='{}']", data), // e.g., "4:4" for 1D slice, "1:3;4:6" for 2D slice
+             TensorOp::OpTuple(_) => write!(f, "tuple"),
++            TensorOp::OpGetTupleElement(index, _) => write!(f, "gte_{}", index),
+             TensorOp::OpXor(_) => write!(f, "xor"),
+             TensorOp::OpTranspose(data, _) => write!(f, "transpose[perm='{}']", data),
+             TensorOp::DetectedConst(id) => write!(f, "DCC[{}]", id),
+@@ -316,6 +329,19 @@ impl std::fmt::Display for TensorOp {
+ }
+
+ // E-class metadata
++/// Flat tuple types are derived from their ordered tensor children, not the
++/// legacy tensor-only analysis slot on the aggregate e-class. Rewriting retains
++/// the OpTuple alternative even when a tuple-producing ISA candidate is added.
++pub fn tuple_elements(
++    egraph: &EGraph<TensorOp, TensorInfo>,
++    id: Id,
++) -> Option<Vec<Id>> {
++    egraph[id].nodes.iter().find_map(|en| match en {
++        TensorOp::OpTuple(children) => Some(children.iter().map(|&id| egraph.find(id)).collect()),
++        _ => None,
++    })
++}
++
+ #[derive(Debug, Clone)]
+ pub struct TensorInfo {
+     pub shape: Vec<i32>,
+diff --git a/act_backend/generic/src/isel/extractor/utils.rs b/act_backend/generic/src/isel/extractor/utils.rs
+index 440743c..c9fd396 100644
+--- a/act_backend/generic/src/isel/extractor/utils.rs
++++ b/act_backend/generic/src/isel/extractor/utils.rs
+@@ -25,6 +25,12 @@ pub fn detect_constants(
+         if constants.contains(&eclass) {
+             continue;
+         }
++        // A tuple is a structured value, not a byte tensor for DetectedConst.
++        // Its tensor elements may still be folded independently, wherever the
++        // tuple occurs (including intermediate and unused tuple expressions).
++        if egraph[eclass].nodes.iter().any(|en| matches!(en, TensorOp::OpTuple(_))) {
++            continue;
++        }
+
+         for en in egraph[eclass].nodes.iter() {
+             if en
+diff --git a/act_backend/generic/src/isel/initializer/lib.rs b/act_backend/generic/src/isel/initializer/lib.rs
+index 38187fe..f225c07 100644
+--- a/act_backend/generic/src/isel/initializer/lib.rs
++++ b/act_backend/generic/src/isel/initializer/lib.rs
+@@ -8,7 +8,7 @@ use std::path::Path;
+ use egg::{EGraph, Id};
+
+ use crate::ir::dtype::Dtype;
+-use crate::ir::egraph::{TensorInfo, TensorOp};
++use crate::ir::egraph::{tuple_elements, TensorInfo, TensorOp};
+ use crate::ir::metadata::{MetaData, MetaDataInfo};
+ use crate::isel::initializer::parser::HLOExpr;
+
+@@ -237,6 +237,19 @@ fn add_expr_to_egraph(
+             }
+         }
+
++        HLOExpr::GetTupleElement { tsymbol, ttype, tshape, ttile, source, index } => {
++            let tuple = *table.get(source)
++                .unwrap_or_else(|| panic!("Undefined tuple operand: {}", source));
++            let node = add_tuple_projection(egraph, tuple, *index);
++            let info = &egraph[node].data;
++            assert_eq!(info.dtype, Dtype::from(ttype.as_str()), "GTE result dtype mismatch");
++            assert_eq!(info.shape, shape_to_vec(tshape), "GTE result shape mismatch");
++            table.insert(tsymbol.clone(), node);
++            if parsing_root {
++                add_root_operations(tsymbol, ttype, tshape, ttile, egraph, table, root);
++            }
++        }
++
+         HLOExpr::Slice {
+             tsymbol,
+             ttype,
+@@ -380,6 +393,20 @@ fn add_tuple(
+     node
+ }
+
++fn add_tuple_projection(
++    egraph: &mut EGraph<TensorOp, TensorInfo>,
++    tuple: Id,
++    index: usize,
++) -> Id {
++    let elements = tuple_elements(egraph, tuple).expect("GTE operand must be a tuple");
++    let element = *elements.get(index).expect("GTE index out of bounds");
++    assert!(tuple_elements(egraph, element).is_none(), "Nested tuples are not supported");
++    let info = egraph[element].data.clone();
++    let node = egraph.add(TensorOp::OpGetTupleElement(index, [tuple]));
++    egraph.set_analysis_data(node, info);
++    node
++}
++
+ fn bind_root_tuple_outputs(
+     element_types: &[String],
+     operands: &[String],
+diff --git a/act_backend/generic/src/isel/initializer/parser.rs b/act_backend/generic/src/isel/initializer/parser.rs
+index 22776d0..dc7cdd2 100644
+--- a/act_backend/generic/src/isel/initializer/parser.rs
++++ b/act_backend/generic/src/isel/initializer/parser.rs
+@@ -243,6 +243,14 @@ pub enum HLOExpr {
+         element_types: Vec<String>,
+         operands: Vec<String>,
+     },
++    GetTupleElement {
++        tsymbol: String,
++        ttype: String,
++        tshape: String,
++        ttile: String,
++        source: String,
++        index: usize,
++    },
+     Concatenate {
+         tsymbol: String,
+         ttype: String,
+@@ -344,6 +352,24 @@ pub fn parse_hlo_expr(
+     let (ttype, tshape, ttile) = parse_type_shape(type_shape);
+
+     match toperator {
++        "get-tuple-element" => {
++            let operands = split_top_level_commas(toperands);
++            assert_eq!(operands.len(), 1, "get-tuple-element requires one operand");
++            let indices: Vec<String> = split_top_level_commas(trest.trim_start_matches(','))
++                .into_iter()
++                .filter_map(|attribute| {
++                    let (key, value) = attribute.split_once('=')?;
++                    (key.trim() == "index").then(|| value.trim().to_string())
++                })
++                .collect();
++            assert_eq!(indices.len(), 1, "get-tuple-element requires one index attribute");
++            let index = indices[0].parse::<usize>()
++                .expect("get-tuple-element index must be a nonnegative integer");
++            Some(HLOExpr::GetTupleElement {
++                tsymbol: tsymbol.to_string(), ttype, tshape, ttile,
++                source: operands[0].clone(), index,
++            })
++        }
+         "parameter" => {
+             // Parameter(0) -- parse the index from operands
+             let tidx = toperands.trim().parse::<u32>().ok()?;
+diff --git a/act_backend/generic/src/isel/rewrites/lib.rs b/act_backend/generic/src/isel/rewrites/lib.rs
+index be65140..614996a 100644
+--- a/act_backend/generic/src/isel/rewrites/lib.rs
++++ b/act_backend/generic/src/isel/rewrites/lib.rs
+@@ -24,5 +24,6 @@ pub fn get_rewrites() -> Vec<Rewrite<TensorOp, TensorInfo>> {
+     for rewrite_str in [ir2ir, ir2isa].concat().iter() {
+         rewrites.push(get_applier(rewrite_str));
+     }
++    rewrites.push(super::tuple::projection_rule());
+     rewrites
+ }
+diff --git a/act_backend/generic/src/isel/rewrites/mod.rs b/act_backend/generic/src/isel/rewrites/mod.rs
+index 3f62120..e7a020c 100644
+--- a/act_backend/generic/src/isel/rewrites/mod.rs
++++ b/act_backend/generic/src/isel/rewrites/mod.rs
+@@ -2,5 +2,6 @@ mod applier;
+ mod ir2ir_rewrites;
+ mod ir2isa_rewrites;
+ mod lib;
++mod tuple;
+
+ pub use lib::get_rewrites;
+diff --git a/act_backend/generic/src/isel/rewrites/tuple.rs b/act_backend/generic/src/isel/rewrites/tuple.rs
+new file mode 100644
+index 0000000..9946a2d
+--- /dev/null
++++ b/act_backend/generic/src/isel/rewrites/tuple.rs
+@@ -0,0 +1,52 @@
++use egg::{EGraph, Id, Pattern, Rewrite, SearchMatches, Searcher, Subst, Var};
++
++use crate::ir::egraph::{TensorInfo, TensorOp};
++
++/// GTE(Tuple(a0, ..., an), i) == ai, for any valid flat-tuple index.
++/// Union adds the direct tensor alternative; it does not erase the GTE edge
++/// through which a later tuple-producing instruction can still be selected.
++struct TupleProjection;
++
++impl Searcher<TensorOp, TensorInfo> for TupleProjection {
++    fn search_eclass_with_limit(
++        &self,
++        egraph: &EGraph<TensorOp, TensorInfo>,
++        eclass: Id,
++        limit: usize,
++    ) -> Option<SearchMatches<'_, TensorOp>> {
++        let mut substs = vec![];
++        for op in &egraph[eclass].nodes {
++            if let TensorOp::OpGetTupleElement(index, [tuple]) = op {
++                for candidate in &egraph[*tuple].nodes {
++                    if let TensorOp::OpTuple(children) = candidate {
++                        if let Some(&element) = children.get(*index) {
++                            if substs.len() < limit && egraph[eclass].data == egraph[element].data {
++                                let mut subst = Subst::default();
++                                subst.insert("?element".parse().unwrap(), element);
++                                substs.push(subst);
++                            }
++                        }
++                    }
++                }
++            }
++        }
++        (!substs.is_empty()).then_some(SearchMatches {
++            eclass,
++            substs,
++            ast: None,
++        })
++    }
++
++    fn vars(&self) -> Vec<Var> {
++        vec!["?element".parse().unwrap()]
++    }
++}
++
++pub fn projection_rule() -> Rewrite<TensorOp, TensorInfo> {
++    Rewrite::new(
++        "tuple-projection",
++        TupleProjection,
++        "?element".parse::<Pattern<TensorOp>>().unwrap(),
++    )
++    .unwrap()
++}

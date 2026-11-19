@@ -1,0 +1,12 @@
+{
+  "circt": {
+    "version": "firtool-1.75.0",
+    "artifact": "circt-full-static-linux-x64.tar.gz",
+    "sha256": "ca5e0b0a9f4f3bbeca44a3e68e8df7ff3ec64126d71c91c3e4e0e9ec184c7984"
+  },
+  "conda_lock": {
+    "path": "conda-reqs/conda-lock-reqs/conda-requirements-riscv-tools-linux-64-lean.conda-lock.yml",
+    "sha256": "1e2a664d9948f9ba30f51a67339f38f7cdb4d7f9d1bcb7acb84fccab97ad0d05",
+    "installer_version": "2.5.7"
+  }
+}

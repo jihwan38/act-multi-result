@@ -1,0 +1,11 @@
+HloModule two_gemm, entry_computation_layout={(s8[16,16]{1,0}, s8[16,16]{1,0}, s8[16,16]{1,0}, s8[16,16]{1,0})->(s32[16,16]{1,0}, s32[16,16]{1,0})}
+
+ENTRY main {
+  %a0 = s8[16,16] parameter(0)
+  %b0 = s8[16,16] parameter(1)
+  %a1 = s8[16,16] parameter(2)
+  %b1 = s8[16,16] parameter(3)
+  %y0 = s32[16,16] dot(%a0, %b0), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  %y1 = s32[16,16] dot(%a1, %b1), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  ROOT %output = (s32[16,16], s32[16,16]) tuple(%y0, %y1)
+}

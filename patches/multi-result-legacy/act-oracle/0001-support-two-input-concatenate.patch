@@ -1,0 +1,48 @@
+diff --git a/taidl_to/oracle_visitor.py b/taidl_to/oracle_visitor.py
+--- a/taidl_to/oracle_visitor.py
++++ b/taidl_to/oracle_visitor.py
+@@ -23,6 +23,7 @@ class OracleVisitor(IDLV2Visitor):
+             'multiply': 'MULTIPLY',
+             'divide': 'DIVIDE',
+             'broadcast': 'BROADCAST',
++            'concatenate': 'CONCATENATE',
+             'maximum': 'MAXIMUM',
+             'minimum': 'MINIMUM',
+             'xor': 'XOR',
+@@ -102,6 +103,17 @@ class OracleVisitor(IDLV2Visitor):
+                 dims = [dims]
+             mapping["dims"] = ", ".join(str(dim) for dim in dims)
+-
++
++        elif template_name == 'CONCATENATE':
++            if len(operand_names) != 2:
++                raise ValueError("The Oracle currently supports two-input concatenate only")
++            mapping["A"] = f'"{operand_names[0]}"'
++            mapping["B"] = f'"{operand_names[1]}"'
++            dims = attributes.get('dimensions', [0])
++            if isinstance(dims, list):
++                mapping["dims"] = ", ".join(str(d) for d in dims)
++            else:
++                mapping["dims"] = str(dims)
++
+         elif template_name == 'TRANSPOSE':
+             if len(operand_names) > 0:
+                 mapping["in"] = f'"{operand_names[0]}"'
+diff --git a/taidl_to/templates/templates.txt b/taidl_to/templates/templates.txt
+--- a/taidl_to/templates/templates.txt
++++ b/taidl_to/templates/templates.txt
+@@ -342,11 +342,12 @@ line = f'{lhs_loc} = {lhs_type} slice({in_loc}), {dims}'
+ output.append(line)
+
+ ### TEMPLATE: CONCATENATE ###
+-in_loc = parameter_util(global_counters,  attrs, state, lvars, comp_attrs, {{in}})
++a_loc = parameter_util(global_counters, attrs, state, lvars, comp_attrs, {{A}})
++b_loc = parameter_util(global_counters, attrs, state, lvars, comp_attrs, {{B}})
+ lhs_loc, lhs_type = lhs_util(attrs, state, global_counters, lvars, comp_attrs, {{lhs}}, {{type}}, {{size}})
+ dims = "{{{dims}}}"
+ dims = dims.replace("'","")
+-line = f'{lhs_loc} = {lhs_type} concatenate({in_loc}), dimensions={{0}}'
++line = f'{lhs_loc} = {lhs_type} concatenate({a_loc}, {b_loc}), dimensions={dims}'
+ output.append(line)
+
+ ### TEMPLATE: ADD ###

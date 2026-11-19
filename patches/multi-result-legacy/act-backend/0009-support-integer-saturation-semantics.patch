@@ -1,0 +1,155 @@
+diff --git a/act_backend/generic/src/ir/egraph.rs b/act_backend/generic/src/ir/egraph.rs
+index 159ee0e..9229bc9 100644
+--- a/act_backend/generic/src/ir/egraph.rs
++++ b/act_backend/generic/src/ir/egraph.rs
+@@ -16,6 +16,8 @@ pub enum TensorOp {
+     OpCopy([Id; 1]),
+     OpDivide([Id; 2]),
+     OpMultiply([Id; 2]),
++    OpMinimum([Id; 2]),
++    OpMaximum([Id; 2]),
+     OpDot([Id; 2]),
+     OpExp([Id; 1]),
+     OpEye(String),
+@@ -47,6 +49,8 @@ impl TensorOp {
+             TensorOp::OpCopy(..) => 1,
+             TensorOp::OpDivide(..) => 2,
+             TensorOp::OpMultiply(..) => 2,
++            TensorOp::OpMinimum(..) => 2,
++            TensorOp::OpMaximum(..) => 2,
+             TensorOp::OpDot(..) => 2,
+             TensorOp::OpExp(..) => 1,
+             TensorOp::OpEye(..) => 0,
+@@ -122,6 +126,8 @@ impl Language for TensorOp {
+             TensorOp::OpCopy(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpDivide(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpMultiply(ids) => LanguageChildren::as_slice(ids),
++            TensorOp::OpMinimum(ids) => LanguageChildren::as_slice(ids),
++            TensorOp::OpMaximum(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpDot(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpExp(ids) => LanguageChildren::as_slice(ids),
+             TensorOp::OpEye(_) => &[],
+@@ -152,6 +158,8 @@ impl Language for TensorOp {
+             TensorOp::OpCopy(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpDivide(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpMultiply(ids) => LanguageChildren::as_mut_slice(ids),
++            TensorOp::OpMinimum(ids) => LanguageChildren::as_mut_slice(ids),
++            TensorOp::OpMaximum(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpDot(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpExp(ids) => LanguageChildren::as_mut_slice(ids),
+             TensorOp::OpEye(_) => &mut [],
+@@ -178,6 +186,12 @@ impl FromOp for TensorOp {
+     fn from_op(op: &str, children: Vec<Id>) -> Result<Self, Self::Error> {
+         match op {
+ {{ISA_FROM_OP_MATCH_ARMS}}
++            "minimum" if children.len() == 2 => {
++                Ok(TensorOp::OpMinimum(<[Id; 2] as LanguageChildren>::from_vec(children)))
++            }
++            "maximum" if children.len() == 2 => {
++                Ok(TensorOp::OpMaximum(<[Id; 2] as LanguageChildren>::from_vec(children)))
++            }
+             op if op == "add" && <[Id; 2] as LanguageChildren>::can_be_length(children.len()) => {
+                 let children = <[Id; 2] as LanguageChildren>::from_vec(children);
+                 Ok(TensorOp::OpAdd(children))
+@@ -317,6 +331,8 @@ impl std::fmt::Display for TensorOp {
+             TensorOp::OpCopy(_) => write!(f, "copy"),
+             TensorOp::OpDivide(_) => write!(f, "divide"),
+             TensorOp::OpMultiply(_) => write!(f, "multiply"),
++            TensorOp::OpMinimum(_) => write!(f, "minimum"),
++            TensorOp::OpMaximum(_) => write!(f, "maximum"),
+             TensorOp::OpDot(_) => write!(f, "dot"),
+             TensorOp::OpExp(_) => write!(f, "exponential"),
+             TensorOp::OpEye(data) => write!(f, "eye[ttype='{}']", data),
+diff --git a/act_backend/generic/src/isel/initializer/lib.rs b/act_backend/generic/src/isel/initializer/lib.rs
+index 438a27d..dbd18af 100644
+--- a/act_backend/generic/src/isel/initializer/lib.rs
++++ b/act_backend/generic/src/isel/initializer/lib.rs
+@@ -590,6 +590,8 @@ fn add_binary_op(
+         "shift-left" => TensorOp::OpShiftLeft,
+         "dot" => TensorOp::OpDot,
+         "divide" => TensorOp::OpDivide,
++        "minimum" => TensorOp::OpMinimum,
++        "maximum" => TensorOp::OpMaximum,
+         "multiply" => TensorOp::OpMultiply
+     });
+
+diff --git a/act_backend/generic/src/isel/initializer/parser.rs b/act_backend/generic/src/isel/initializer/parser.rs
+index 0233b2c..28422de 100644
+--- a/act_backend/generic/src/isel/initializer/parser.rs
++++ b/act_backend/generic/src/isel/initializer/parser.rs
+@@ -442,6 +442,8 @@ pub fn parse_hlo_expr(
+         | "shift-left"
+         | "dot"
+         | "divide"
++        | "minimum"
++        | "maximum"
+         | "multiply" => {
+             // binary operators with two operands separated by comma
+             let mut parts = toperands.split(',').map(|s| s.trim().to_string());
+diff --git a/act_backend/isel_ir2isa_rewrites_rs_generator.py b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+index 832518f..17cc821 100644
+--- a/act_backend/isel_ir2isa_rewrites_rs_generator.py
++++ b/act_backend/isel_ir2isa_rewrites_rs_generator.py
+@@ -42,6 +42,9 @@ def shape_checks(semantics):
+     for i, node in enumerate(semantics.postorder):
+         for axis, text in enumerate(node.shape):
+             code.append(f"    if i64::from(lhs_metadata[{i}].shape[{axis}]) != {dim_rust(text)} {{ return None; }}")
++        if node.operation == "constant":
++            code.append(f"    if !egraph[lhs_eclasses[{i}]].nodes.iter().any(|node| matches!(node,"
++                        f" TensorOp::OpConstant(data) if data.chars().filter(|c| !c.is_whitespace()).eq({json.dumps(node.attrs['literal'])}.chars()))) {{ return None; }}")
+         if "dimensions" in node.attrs:
+             dimensions = node.attrs["dimensions"].strip("{}").split(",")
+             values = [dim_rust(value) for value in dimensions if value.strip()]
+diff --git a/act_backend/semantics.py b/act_backend/semantics.py
+index 0a6297d..b1b4637 100644
+--- a/act_backend/semantics.py
++++ b/act_backend/semantics.py
+@@ -1,6 +1,7 @@
+ """One semantic DAG lowering for scalar and ordered multi-result instructions."""
+ import ast
+ from dataclasses import dataclass
++import json
+ import re
+
+ OP_MAP = {
+@@ -91,10 +92,31 @@ def lower_semantics(metadata):
+             token = parameters[index] = (f"?p{index}" if multiple or index >= 26
+                                          else "?" + chr(ord("a") + index))
+             children = []
++        elif op == "constant":
++            # Preserve every integer element and validate its actual shape.
++            # A scalar HLO literal must not be assumed to splat into an array.
++            limits = {"s8": (-128, 127), "u8": (0, 255),
++                      "s32": (-2147483648, 2147483647), "u32": (0, 4294967295)}
++            text = operands[0].strip("`") if len(operands) == 1 else ""
++            if dtype not in limits or not re.fullmatch(r"[-0-9{},\s]+", text):
++                raise ValueError("Only literal integer constants are supported")
++            value = json.loads(text.replace("{", "[").replace("}", "]"))
++            def validate_literal(item, axes):
++                if axes:
++                    if not isinstance(item, list) or len(item) != int(axes[0]):
++                        raise ValueError("Constant literal shape differs from its declared shape")
++                    for child in item:
++                        validate_literal(child, axes[1:])
++                elif type(item) is not int or not limits[dtype][0] <= item <= limits[dtype][1]:
++                    raise ValueError("Constant literal exceeds its declared dtype")
++            validate_literal(value, dimensions)
++            value = json.dumps(value, separators=(",", ":")).replace("[", "{").replace("]", "}")
++            token, children = "constant_?", []
+         else:
+             arities = {"add": 2, "bitcast_convert": 1, "broadcast": 1,
+                        "concatenate": 2, "concat": 2, "convert": 1, "copy": 1,
+                        "divide": 2, "dot": 2, "exponential": 1, "multiply": 2,
++                       "minimum": 2, "maximum": 2,
+                        "or": 2, "reduce_add": 1, "reshape": 1,
+                        "shift_left": 2, "shift_right_logical": 2,
+                        "transpose": 1, "xor": 2}
+@@ -114,6 +136,8 @@ def lower_semantics(metadata):
+         elif attrs and not (op in ("broadcast", "transpose", "concatenate", "concat", "reduce_add")
+                             and set(attrs) == {"dimensions"}):
+             raise ValueError(f"Unsupported semantics attributes on {op}: {attrs}")
++        if op == "constant":
++            attrs = {"literal": value}
+         node = Node(token, children, dtype, dimensions, op, attrs)
+         declarations[name] = node
+         if ctx.ROOT() is not None:
