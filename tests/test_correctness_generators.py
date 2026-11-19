@@ -1,6 +1,8 @@
 """Generator regressions for common constraints and shared result semantics."""
 import ast
 import inspect
+from pathlib import Path
+import re
 import unittest
 
 from act.taidl import Accelerator
@@ -35,6 +37,35 @@ def fixture(op="multiply", dynamic=False, outputs=3):
 
 
 class CorrectnessGenerators(unittest.TestCase):
+    def test_signed_integer_rewrites_match_backend_dtype_names(self):
+        # Generate the INT8 -> INT32 rule which the BF16 examples do not cover.
+        # Check against the backend's actual HLO-name -> Rust-variant contract.
+        dtype_source = (Path(inspect.getfile(rust_generator)).parent
+                        / "generic/src/ir/dtype.rs").read_text()
+        variants = dict(re.findall(r'"(\w+)"\s*=>\s*Dtype::(\w+)', dtype_source))
+        for outputs in (1, 2):
+            with self.subTest(outputs=outputs):
+                target = Accelerator("SignedGemmProbe")
+                target.add_data_model("inputs", [64], [16], "s8")
+                target.add_data_model("results", [64], [16], "s32")
+                instruction = target.add_instruction("gemm", [], ["a", "b", "c", "d", "x", "y"])
+                addresses = ["a", "b", "c", "d"][:outputs * 2]
+                instruction.set_inputs([("inputs", [f"@a.{addr}"], ["16"]) for addr in addresses])
+                instruction.set_outputs([("results", [f"@a.{addr}"], ["16"])
+                                         for addr in ["x", "y"][:outputs]])
+                body = "\n".join(f"%arg{i} = s8[16,16] parameter({i});" for i in range(outputs * 2))
+                for i in range(outputs):
+                    body += (f"\n{'ROOT ' if outputs == 1 else ''}%out{i} = s32[16,16] "
+                             f"dot(%arg{i * 2}, %arg{i * 2 + 1}), "
+                             "lhs_contracting_dims={1}, rhs_contracting_dims={0};")
+                if outputs == 2:
+                    body += "\nROOT %pair = (s32[16,16], s32[16,16]) tuple(%out0, %out1);"
+                instruction.add_semantics("ENTRY gemm {\n" + body + "\n}")
+                metadata = _get_instruction_metadata(target)[0]
+                rust = generate_ir2isa_rust_functions(metadata, get_backend_template_loader())
+                referenced = set(re.findall(r"Dtype::(\w+)", rust))
+                self.assertEqual(referenced, {variants["s8"], variants["s32"]})
+
     def test_semantics_does_not_depend_on_code_generators(self):
         imports = [node.module for node in ast.walk(ast.parse(inspect.getsource(semantics)))
                    if isinstance(node, ast.ImportFrom)]

@@ -850,7 +850,7 @@ index fb1dc4ff902f959aa1e920b154b83d118c55d4a6..d292673cdac5be159d603449f5f89f8e
 -def generate_comp_attr_extraction(root_assignment, comp_attr, num_assignments):
 -    # Generate computational attribute extraction code from ROOT assignment
 -    if not comp_attr or not root_assignment:
-+    mapping = {"s8": "S8", "u8": "U8", "s32": "S32", "u32": "U32",
++    mapping = {"s8": "I8", "u8": "U8", "s32": "I32", "u32": "U32",
 +               "f32": "FP32", "bf16": "BF16"}
 +    if dtype not in mapping:
 +        raise ValueError(f"Unsupported TensorOp dtype: {dtype}")
