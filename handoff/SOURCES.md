@@ -44,7 +44,10 @@
 - `scheduler::topological()`은 메모리 점유를 기준으로 의존성 순서를 고른다. 기본 `python/cost/model.py`는 assembly 줄 수를 반환한다.
 - 과거 Backend의 “종료 코드 0인데 출력이 없음”과 현재 `run.sh`의 성공 판정은 다르다. 현재 실행 래퍼는 빈 출력을 실패로 처리한다.
 
-## 2. Dual Gemmini 결과
+## 2. 이전 저장소 act-parallelism의 Dual Gemmini 결과
+
+**이 절의 결과는 `act-parallelism/experiments/05_dual_gemmini`에서 얻었다.**
+`act-multi-result`에서 Gemmini를 실행해 얻은 결과가 아니다. 현재 저장소로의 이식·재검증은 미완료다.
 
 별도 저장소의 기준은 [`act-parallelism` commit 6164b44](https://github.com/jihwan38/act-parallelism/tree/6164b44c8003f7403903930ef3cc938816121ba3/experiments/05_dual_gemmini)다.
 그 안의 [결과 보고서](https://github.com/jihwan38/act-parallelism/blob/6164b44c8003f7403903930ef3cc938816121ba3/experiments/05_dual_gemmini/docs/results.md),
@@ -61,8 +64,8 @@
 | 의존 GEMM | 879 / 572 | 881 / 571 | 878 / 574 |
 | 독립 네 GEMM | 1916 / 1192 | 1807 / 1027 | 1734 / 1110 |
 
-보존한 [실행 요약](evidence/gemmini-summary.json)과 [분석 JSON](evidence/gemmini-analysis.json)에
-72개 실행과 144개 커널 검사, cycle 및 계산 겹침 기록이 있다.
+[실행 요약](evidence/gemmini-summary.json)과 [분석 JSON](evidence/gemmini-analysis.json)은
+이전 저장소의 기록을 보존한 사본이다. 그 실험의 72개 실행과 144개 커널 검사, cycle 및 계산 겹침 기록이 있다.
 독립 두 GEMM의 seed 901에서 ACT의 PE(0,0) nonzero 곱셈 겹침은 두 호출 합계 30 cycle이다.
 PE 하나의 관측으로 전체 array utilization을 측정했다고 할 수는 없다.
 
@@ -131,7 +134,8 @@ max·argmax는 자연스러운 다중 결과 사례의 후보이고, Contour·Te
 
 ## 5. 함께 보존한 파일
 
-`evidence/`에는 회귀 검사 기록과 Gemmini 실행·분석 요약을 보존했다.
+`evidence/regression.json`은 현재 저장소의 회귀 검사 기록이다.
+`gemmini-summary.json`과 `gemmini-analysis.json`은 이전 `act-parallelism` 실험의 참고 사본이다.
 [출처와 SHA-256](evidence/provenance.json)에 원래 위치와 파일 hash를 기록했다.
 Gemmini JSON 안의 과거 경로와 `05_for_next` 이름은 원본 기록 그대로이며 현재 실행 경로가 아니다.
 이 요약에는 RTL 실행 파일·전체 trace·빌드 환경이 포함되지 않는다. 재실행에는 별도 저장소의 준비 절차가 필요하다.

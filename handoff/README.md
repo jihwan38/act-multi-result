@@ -2,8 +2,9 @@
 
 정리일: 2026-11-20 · 코드 기준: [`handoff-20261118`](https://github.com/jihwan38/act-multi-result/tree/handoff-20261118)
 
-**ACT의 다중 결과 지원과 세 검색 구현의 비교를 완료했다. 일반적인 병렬 스케줄링은 남아 있다.**
-별도 Dual Gemmini 실험에서는 제한된 사례의 실제 계산 겹침을 RTL에서 확인했다.
+**`act-multi-result`에서 다중 결과 지원과 세 검색 구현의 비교를 완료했다.**
+이 저장소의 검증 범위는 컴파일·Oracle 기능 검증과 검색 비교다.
+`act-parallelism`의 이전 Gemmini RTL 실험은 별도 참고 자료이며, 이 저장소로의 이식·재검증은 미완료다.
 
 이 문서에서 연구 흐름과 현재 상태를 읽고, 필요한 근거만 [자료 안내](SOURCES.md)에서 찾아보면 된다.
 공유용 [PDF](ACT-handoff.pdf)도 같은 내용을 담고 있다.
@@ -14,7 +15,7 @@
 | --- | --- | --- |
 | 다중 결과 지원 | 명령 선택부터 주소 할당·코드 생성·Oracle 검증까지 연결 | 현재 저장소의 `multi-result` 구성 |
 | MultiPattern 비교 | 세 구현의 기능 검증·측정 완료. 전반적인 성능 우위는 확인하지 못함 | `experiments/multipattern/` |
-| Dual Gemmini | 두 엔진의 RTL 검증 완료. 현재 저장소로의 이식은 미완료 | 별도 `act-parallelism` 저장소의 실험 05 |
+| 참고: 이전 Dual Gemmini | `act-parallelism`에서 RTL 검증. 현재 저장소로의 이식·재검증은 미완료 | `act-parallelism`의 실험 05 |
 | 공개 ACT 분석 | 논문·명세·평가 코드의 범위를 대조 | 자료 안내의 공개 ACT 분석 |
 | MATCHA 연동 | 연결 방식 검토. 통합 구현·실행은 미완료 | 후속 연구 선택지 |
 
@@ -29,9 +30,9 @@ QKV=`baseline`, DoubleGEMM=`multi-result`다. 다른 두 구성은 `--toolchain`
 ## 2. 왜 시작했고 무엇을 바꿨나
 
 시작 질문은 “ACT에 계산 유닛을 여러 개 기술하면, 독립 계산을 여러 유닛에 배치할 수 있는가?”였다.
-같은 ISA를 두 벌 넣은 실험에서는 해당 attention 입력이 한쪽 lane만 사용했다.
+`act-parallelism`에서 같은 ISA를 두 벌 넣은 초기 실험에서는 해당 attention 입력이 한쪽 lane만 사용했다.
 두 lane의 결과를 요구하는 `join_store`를 넣자 두 lane을 사용하는 명령열을 만들 수 있었다.
-이후 한 명령이 여러 결과를 내는 경우를 ACT 전체 경로에서 처리하도록 확장했다.
+이후 다중 결과 확장을 `act-multi-result`에 정리하고 검색 구현의 비교를 진행했다.
 
 수정의 중심은 **명령 하나와 그 명령이 만드는 여러 값을 구분하는 것**이다.
 
@@ -42,13 +43,14 @@ QKV=`baseline`, DoubleGEMM=`multi-result`다. 다른 두 구성은 `--toolchain`
 
 대표 입력은 [두 GEMM과 concatenate](../cases/double_gemm/workloads/two_gemm_concat.hlo)다.
 입력 HLO에는 일반 `dot` 두 개가 있고, 컴파일러가 이를 명세의 `double_gemm`으로 구현할 수 있다.
+현재 예제는 **BF16 64×64 행렬**을 사용하며 CPU Oracle로 검증한다.
 HLO에서 DoubleGEMM을 직접 호출하도록 적어 둔 예제가 아니다.
 
 이 구현으로 **한 명령의 여러 결과를 정확하게 처리하는 기반**을 남겼다.
 명령이 실행되는 엔진과 실행시간을 자동으로 최적화하는 기능은 별도다.
 수정 파일이 필요할 때는 [README의 패치 안내](../README.md#폴더와-패치의-역할)를 보면 된다.
 
-## 3. 실험에서 무엇을 확인했나
+## 3. 현재 저장소에서 확인한 결과
 
 **MultiPattern은 비교를 마친 실험이다.** 결과별로 검색한 뒤 조합하는 기본 방식,
 여러 패턴을 함께 검색하는 방식, 생성된 rewrite가 검색·적용을 직접 수행하는 방식을 비교했다.
@@ -61,23 +63,18 @@ HLO에서 DoubleGEMM을 직접 호출하도록 적어 둔 예제가 아니다.
 이 비교의 코드 비용은 **assembly 파일 줄 수**이며, 장치 실행시간이 아니다.
 측정 조건과 원자료는 [최종 비교 보고서](../experiments/multipattern/REPORT.md)에 있다.
 
-**Dual Gemmini에서는 실제 계산 겹침을 확인했다.** 2026-09-18 재검증 기록은
-4개 workload × 입력 6종 × 실행 방식 3종, 총 **72회 RTL 실행·144회 결과 검사 통과**다.
-독립 두 GEMM의 dense 입력에서는 두 엔진의 PE(0,0) 곱셈 활동이 실제로 겹쳤다.
+**다중 결과 경로는 컴파일과 Oracle 실행으로 검증했다.** 명령의 각 결과가 올바른 주소로 전달되고,
+최종 출력이 입력 HLO의 결과와 일치하는지 확인했다. 현재 저장소의 이 결과가 실제 Gemmini에서의
+계산 겹침이나 장치 실행시간 개선을 입증하는 것은 아니다.
 
-여기서 `double_gemm`은 두 Gemmini에 preload·compute를 보내는 소프트웨어 명령 묶음이다.
-새 하드웨어 opcode를 만든 것은 아니다. **16×16 정수 사례**이며, 공유 입력의 두 GEMM은
-개별 명령으로 선택됐고, 독립 네 GEMM도 한 쌍만 공동 명령으로 선택됐다.
-결과 수치와 원본 요약은 [자료 안내의 RTL 기록](SOURCES.md#2-dual-gemmini-결과)에 있다.
-
-기능 검증 통과, 엔진의 계산 겹침, 모델 전체 성능 향상은 각각 다른 증거를 요구한다.
-현재 결과는 앞의 두 범위를 다룬다.
+참고로 **`act-parallelism/experiments/05_dual_gemmini`에는 이전 RTL 실험 결과가 있다.**
+현재 저장소에는 그 Gemmini 실험을 아직 이식하지 않았다.
+이전 결과의 수치와 검증 범위는 [자료 안내](SOURCES.md#2-이전-저장소-act-parallelism의-dual-gemmini-결과)에서 따로 확인한다.
 
 ## 4. 알아둘 한계와 남은 선택
 
 **명령 순서와 실행시간:** 현재 스케줄러는 의존 관계와 중간값의 메모리 점유를 기준으로 순서를 고른다.
 엔진 점유·명령 지연시간을 모델링해 “계산 중 다음 입력을 미리 읽는 순서”를 직접 찾지는 않는다.
-Dual Gemmini 실험도 DMA 명령은 완료를 기다리므로 일반적인 이동·계산 중첩을 검증한 사례가 아니다.
 
 **여러 커널의 배치:** 한 타일 커널 안의 명령 선택과, 여러 커널을 어느 장치에서 언제 실행할지는
 다른 최적화 단위다. 현재 작업에는 모델 전체의 분할·장치 배치·커널 간 비동기 실행이 포함되지 않는다.
@@ -105,7 +102,7 @@ signed 정수 타입 이름을 `S8/S32`로 잘못 생성하던 오류는 `I8/I32
 | --- | --- |
 | 설치·실행·수정 파일 위치 | [저장소 README](../README.md) |
 | 세 검색 구현의 비교와 측정 원자료 | [MultiPattern 보고서](../experiments/multipattern/REPORT.md) |
-| Gemmini RTL·공개 ACT 분석·검증 기록 | [자료 안내](SOURCES.md) |
+| 현재 검증 기록·이전 Gemmini RTL·공개 ACT 분석 | [자료 안내](SOURCES.md) |
 | 원래 발표 내용 | [ACT 분석 슬라이드](https://docs.google.com/presentation/d/1xrX7PP3hDbG9fPs4vbIdwh3tAeJvsIbW8EetvnBUnIM/edit) |
 
 기본 배경은 [ACT](https://arxiv.org/abs/2510.09932v2)와
