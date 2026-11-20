@@ -5,11 +5,43 @@
 Rocket CPU 하나에 붙은 Gemmini 두 개를 Verilator에서 실행한다.
 현재 BF16 예제인 `cases/double_gemm`과는 별도 구성이다.
 
-**먼저 볼 것:** 실행은 아래 두 단계, 구조 설명은 [native 연결](docs/native-interface.md).
+**먼저 볼 것:** ISA는 아래 표, 실행은 그다음 두 단계, 상세 구조는 [native 연결](docs/native-interface.md).
 결론과 측정값은 [결과 보고서](RESULTS.md)에 있다.
 
 2026-11-20 현재 경로에서 compiler·Oracle과 RTL 기능·계산 겹침을 재확인했다.
 기존 RTL 실행 파일을 재사용했으며, 빈 환경에서 하드웨어를 재빌드하는 과정은 다시 실행하지 않았다.
+
+## ISA 구성
+
+[GemminiDual.py](GemminiDual.py)의 `make_target()`이 두 엔진의 버퍼와 명령을 선언한다.
+`k=0,1`은 Gemmini 엔진 번호이며, 각 엔진의 scratchpad·accumulator는 서로 독립이다.
+
+| 버퍼 | 역할·형태 | 용량 | 주소 단위 |
+| --- | --- | --- | --- |
+| `d0` | 공유 외부 메모리, TAIDL이 자동으로 제공하는 `u8` 메모리. RTL에서는 DDR3 | 명세에서 고정하지 않음 | 1 byte |
+| `sp_0`, `sp_1` | 엔진별 scratchpad, `s8[16384,16]` | 각각 256 KiB | 1행 = 16 bytes |
+| `acc_0`, `acc_1` | 엔진별 accumulator, `s32[1024,16]` | 각각 64 KiB | 1행 = 64 bytes |
+
+이 실험의 TAIDL 명령은 **엔진별 4개 × 2엔진 + `double_gemm` 1개 = 9개**다.
+이동·저장이 6개, 계산이 3개다.
+모든 행렬은 16×16이며, `_k`는 실제 명령의 `_0`·`_1`을 묶어 표기했다.
+
+| 명령 (종수) | 입력 → 출력 | 의미 | native 구현 |
+| --- | --- | --- | --- |
+| `mvin_k` (2) | `d0` 256 bytes → `sp_k` 16행 | INT8 입력 타일 읽기 | `mvin` |
+| `gemm_k` (2) | `sp_k`의 타일 2개 → `acc_k` 16행 | INT8 행렬곱을 INT32로 저장. 기존 결과는 덮어씀 | `preload → compute_preloaded` |
+| `mvout_k` (2) | `acc_k` 16행 → `d0` 1,024 bytes | INT32 결과를 그대로 저장 | INT32 `mvout` |
+| `requantize_store_k` (2) | `acc_k` 16행 → `d0` 256 bytes | 결과를 `[-128,127]`로 제한해 INT8로 저장 | 저장 설정 변경 + INT8 포화 `mvout` |
+| `double_gemm` (1) | `sp_0`의 타일 2개 + `sp_1`의 타일 2개 → `acc_0`, `acc_1` | 독립 GEMM 두 개, INT32 결과 2개 | 두 엔진에 `preload`·`compute_preloaded`를 보낸 뒤 한 번에 완료 대기 |
+
+`i0`, `i1`, …은 입력 주소, `o0`, `o1`은 출력 주소이며 위 표의 주소 단위를 따른다.
+`double_gemm`은 옛 문법인 두 `ROOT`로 결과를 선언한다. 첫 결과는 `acc_0[o0]`,
+두 번째는 `acc_1[o1]`에 대응한다. 현재 BF16 명세의 `ROOT tuple(...)`과 구분해야 한다.
+
+이 명령 수는 하드웨어 opcode 수가 아니다. [emit_native.py](emit_native.py)의 `lower_calls()`가
+ACT 명령열을 [gemmini_dual.h](native/gemmini_dual.h)의 호출로 옮긴다.
+WS(weight-stationary)·scale 1 등의 설정도 이 header가 제공하며, `double_gemm`은 새 opcode 없이
+두 엔진의 계산을 묶는다. 개별 이동·계산 명령은 각각 완료를 기다린다.
 
 ## 1. compiler·Oracle 확인
 

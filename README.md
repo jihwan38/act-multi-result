@@ -6,6 +6,14 @@ Linux·Conda 환경을 사용하며 Oracle은 CPU에서 실행한다.
 
 **인수인계:** [연구 목표·수정 흐름·실험 결과·한계·패치 안내](handoff/README.md)
 
+각 case의 README에 버퍼 구성·주소 단위·전체 ISA 명령표와 실행법을 정리했다.
+
+| Case | 내용 | TAIDL 명령 수 | 기본 구성 |
+| --- | --- | --- | --- |
+| [QKV](cases/qkv/README.md) | BF16 64×64 attention, 단일 결과 명령 | 7 | `baseline` |
+| [DoubleGEMM](cases/double_gemm/README.md) | QKV 두 유닛과 다중 결과 명령 | 16 | `multi-result` |
+| [Dual Gemmini](cases/gemmini/README.md) | INT8 16×16, 두 Gemmini의 native·RTL 실행 | 9 | `multi-result-legacy` |
+
 ## 현재 상태
 
 다중 결과 지원과 세 검색 구현의 비교를 마무리하고, 코드·실험·측정 자료를 `main`에 통합했다.
