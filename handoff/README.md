@@ -157,15 +157,14 @@ FPGA·실칩 검증까지 마친 것은 아니다.**
 
 ## 7. 후속 연구로 검토했던 논문
 
-[분석 슬라이드 16–18쪽](https://docs.google.com/presentation/d/1xrX7PP3hDbG9fPs4vbIdwh3tAeJvsIbW8EetvnBUnIM/edit#slide=id.v2s33)의
-후보 네 편이다. 마지막 열은 이 저장소에 구현된 기능이 아니라 **연결해 볼 연구 방향**이다.
+[분석 슬라이드 16–18쪽](https://docs.google.com/presentation/d/1xrX7PP3hDbG9fPs4vbIdwh3tAeJvsIbW8EetvnBUnIM/edit#slide=id.v2s33)에서
+검토한 후보 중 ACT의 명세 작성과 매핑 탐색에 직접 연결되는 두 연구다.
+마지막 열은 **연결해 볼 연구 방향**이며, 이 저장소에 구현된 기능은 아니다.
 
 | 논문 | 핵심 아이디어 | 우리 연구에서 볼 지점 |
 | --- | --- | --- |
 | [TensorLift](https://arxiv.org/abs/2604.13523v3) | RTL에서 추출한 비트 수준 동작을 MLIR로 분석해 텐서 연산·메모리 의미를 복원하고 TAIDL 명세를 만든다. Gemmini·VTA에 적용했다. | 손으로 쓰던 ACT 입력 명세를 자동화하는 방향. 추출된 의미를 현재 다중 결과·정수 연산 지원 범위에 맞춰 받을 수 있는지 검토한다. |
 | [Zomboss](https://arxiv.org/abs/2608.00894v3) / [Contour](https://arxiv.org/abs/2608.00894v4) | 에이전트가 타일 크기·메모리 배치 등의 선택을 제안하면 컴파일러가 제약을 만족하는 코드로 완성한다. Contour는 탐색 선택지 자체를 확장하는 기능도 다룬다. | ACT의 명령·배치 선택 일부를 외부 탐색에 노출하고, 추출·할당·정답 검증과 연결하는 방향. |
-| [KernelCraft](https://proceedings.mlr.press/v306/nie26c.html) | 새 ISA의 저수준 커널을 에이전트가 작성하고 컴파일·시뮬레이션·정답 비교로 고치는 평가 환경이다. | 에이전트의 직접 코드 생성과 ACT를 통한 생성을 비교할 때의 작업 구성·평가 방법을 참고한다. |
-| [AccelOpt](https://proceedings.mlsys.org/paper_files/paper/2026/hash/0f8426558905746fc38da5e335700aec-Abstract-Conference.html) | Trainium NKI 커널을 반복 개선하며, 느린 코드가 빨라진 수정 경험을 저장해 다음 탐색에 사용한다. | ACT 후보나 매핑을 실행시간으로 평가하고 개선 경험을 재사용하는 탐색 방식을 검토한다. |
 
 슬라이드의 Zomboss는 같은 arXiv 논문의 **2026-11-18 v4에서 Contour로 이름과 구성이 바뀌었다.**
 위 링크로 당시 버전과 개정판을 구분해 읽을 수 있다.
