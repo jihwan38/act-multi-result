@@ -1,6 +1,6 @@
 # multipattern-rewrite: 공동 검색과 적용을 rewrite로 연결
 
-[인수인계](../../handoff/README.md) · [비교 보고서](../../experiments/multipattern/REPORT.md) · [적용 목록](series)
+[예제로 보는 두 방식의 차이](../../handoff/README.md#3-검색-실험-multipattern과-multipattern-rewrite) · [비교 보고서](../../experiments/multipattern/REPORT.md) · [적용 목록](series)
 
 2026-10-26의 [커밋 3b85d5d](https://github.com/jihwan38/act-multi-result/commit/3b85d5dad68867fb6768d355ecba85876fcd5685)에서
 추가한 세 번째 비교 구현이다. `multipattern`이 후보 tuple을 등록한 뒤 ISA rewrite로

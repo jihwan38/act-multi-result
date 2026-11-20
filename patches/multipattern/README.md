@@ -1,6 +1,6 @@
 # multipattern: 여러 결과의 후보를 함께 검색
 
-[인수인계](../../handoff/README.md) · [비교 보고서](../../experiments/multipattern/REPORT.md) · [적용 목록](series)
+[예제로 보는 두 방식의 차이](../../handoff/README.md#3-검색-실험-multipattern과-multipattern-rewrite) · [비교 보고서](../../experiments/multipattern/REPORT.md) · [적용 목록](series)
 
 현재 다중 결과 구현의 **공동 후보 발견 부분**을 바꾸는 Backend 패치 2개다.
 **고정 upstream → baseline → multi-result → multipattern** 순서로 적용한다.
