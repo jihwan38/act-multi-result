@@ -3,6 +3,7 @@
 [예제로 보는 두 방식의 차이](../../handoff/README.md#3-검색-실험-multipattern과-multipattern-rewrite) · [비교 보고서](../../experiments/multipattern/REPORT.md) · [적용 목록](series)
 
 현재 다중 결과 구현의 **공동 후보 발견 부분**을 바꾸는 Backend 패치 2개다.
+기존 ISA 변환 규칙을 유지하며 공동 검색을 도입한 단계로, 이후 `multipattern-rewrite`에서 검색과 적용을 통합했다.
 **고정 upstream → baseline → multi-result → multipattern** 순서로 적용한다.
 결과별 검색 후 조합을 열거하던 대신, 여러 결과 패턴과 같은 입력을 가리켜야 한다는 조건을
 `egg::MultiPattern`으로 함께 검색한다. 찾은 tuple 후보를 등록하고 ISA rewrite가 다시

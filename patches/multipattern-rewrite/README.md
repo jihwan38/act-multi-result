@@ -3,8 +3,10 @@
 [예제로 보는 두 방식의 차이](../../handoff/README.md#3-검색-실험-multipattern과-multipattern-rewrite) · [비교 보고서](../../experiments/multipattern/REPORT.md) · [적용 목록](series)
 
 2026-10-26의 [커밋 3b85d5d](https://github.com/jihwan38/act-multi-result/commit/3b85d5dad68867fb6768d355ecba85876fcd5685)에서
-추가한 세 번째 비교 구현이다. `multipattern`이 후보 tuple을 등록한 뒤 ISA rewrite로
-다시 검색하는 단계를 합쳐 볼 수 있는지 확인했다. 기본 `multi-result`를 대체한 버전은 아니다.
+추가한 후속 구현이다. `multi-result`의 기반과 `multipattern`의 공동 검색을 발전시켜,
+목표였던 **공동 검색 → 조건 검사 → 명령 적용을 한 rewrite에서 처리하는 구조**로 통합했다.
+중간 tuple 후보를 등록한 뒤 다시 검색하던 연결을 정리한 성과가 있다.
+성능 비교에서 전반적인 우위는 확인하지 못했으며, 기본 실행 구성은 `multi-result`로 유지한다.
 
 적용 순서는 **고정 upstream → baseline → multi-result → multipattern → multipattern-rewrite**다.
 앞 묶음의 검색 예산 코드 등을 사용하므로 `multipattern` 패치도 적용한다.
