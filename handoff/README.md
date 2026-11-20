@@ -13,7 +13,7 @@
 | --- | --- |
 | 현재 다중 결과 구현 | BF16 64×64 DoubleGEMM에서 후보 발견 → 명령 선택 → 결과별 주소 할당 → 코드 생성 → 기능 검증까지 연결 |
 | 검색 방식 비교 | `multi-result`, `multipattern`, `multipattern-rewrite` 비교 완료. 전반적인 성능 우위는 확인하지 못함 |
-| Dual Gemmini | 이전 구현인 `multi-result-legacy`로 RTL 기능과 두 엔진의 계산 겹침 확인. 현재 `multi-result`로의 이식은 남음 |
+| Dual Gemmini | 이전 구현인 `multi-result-legacy`로 RTL 기능과 두 엔진의 동시 계산 확인. 현재 `multi-result`로의 이식은 남음 |
 
 코드와 비교 자료는 `main`에 있다. 기본 실행은 QKV=`baseline`, BF16 DoubleGEMM=`multi-result`,
 Gemmini=`multi-result-legacy`다.
@@ -41,7 +41,7 @@ DoubleGEMM은 한 번 실행하지만 `C0`, `C1`은 다른 버퍼에 놓이고 �
 미리 DoubleGEMM 호출을 넣지 않으며, [명세](../cases/double_gemm/QKVDoubleGemm.py)에 맞는 조합을 찾아
 `double_gemm(..., addr_out0, addr_out1)`과 `join_store(...)`를 생성한다.
 비교 실험에는 두 결과·세 결과, 서로 다른 산술 연산, 공유·반복 입력도 포함했다.
-다만 CPU Oracle의 정답 일치로는 장치의 계산 겹침이나 실행속도를 알 수 없다.
+다만 CPU Oracle의 정답 일치로는 장치의 동시 계산 여부나 실행속도를 알 수 없다.
 
 ## 3. 검색 실험: MultiPattern과 multipattern-rewrite
 

@@ -15,10 +15,10 @@ BF16 64×64 예제이며 기본 실행 구성은 `multi-result`다.
 | `d1_0`, `d1_1` | 각 유닛의 GEMM 입력, `bf16[128,64]` | 각각 16 KiB, 타일 2개 | 1행 = 128 bytes |
 | `d2_0`, `d2_1` | 각 유닛의 계산 결과, `bf16[64,64]` | 각각 8 KiB, 타일 1개 | 1행 = 128 bytes |
 
-명령은 **기존 7종 × 2유닛 + 공동 명령 2종 = 16개**다.
+TAIDL 명령은 **유닛별 7개 × 2유닛 + 공동 명령 2개 = 16개**다.
 표의 `_k`는 실제 이름의 `_0`·`_1`을 묶어 표기한 것이다.
 
-| 명령 | 종수 | 입력 → 출력 | 동작 |
+| 명령 | 명령 수 | 입력 → 출력 | 동작 |
 | --- | --- | --- | --- |
 | `load_rm_k` | 2 | `d0` → `d1_k` | `n × 128` bytes를 BF16 `n`행으로 읽기 |
 | `load_cm_k` | 2 | `d0` → `d1_k` | 읽은 BF16 행렬을 전치 |
@@ -53,6 +53,6 @@ conda activate act
 
 기본 생성물은 `build/multi-result/runs/double_gemm/two_gemm_concat/`에 있다.
 `--toolchain`을 바꾸면 `build/<toolchain>/` 아래에 생성한다.
-이 case는 CPU Oracle로 기능을 검증한다. 두 엔진의 실제 계산 겹침을 확인한 별도 case는
+이 case는 CPU Oracle로 기능을 검증한다. 두 엔진의 동시 계산을 확인한 별도 case는
 [Dual Gemmini](../gemmini/README.md), 검색 구현별 차이는
 [패치 안내](../../handoff/README.md#5-패치-폴더는-각각-무엇인가)에 있다.
